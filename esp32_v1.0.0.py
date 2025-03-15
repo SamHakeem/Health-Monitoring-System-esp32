@@ -82,18 +82,6 @@ class SettingsWindow(QDialog):
         self.setGeometry(200, 200, 400, 400)
         layout = QVBoxLayout()
 
-        # Age input
-        self.age_label = QLabel("Age:")
-        self.age_entry = QLineEdit()
-        layout.addWidget(self.age_label)
-        layout.addWidget(self.age_entry)
-
-        # Weight input
-        self.weight_label = QLabel("Weight (kg):")
-        self.weight_entry = QLineEdit()
-        layout.addWidget(self.weight_label)
-        layout.addWidget(self.weight_entry)
-
         # Alarm thresholds
         self.spo2_threshold = QSpinBox()
         self.spo2_threshold.setValue(alarm_thresholds["spo2"])
@@ -106,6 +94,10 @@ class SettingsWindow(QDialog):
         self.path_button.clicked.connect(self.select_directory)
         layout.addWidget(self.path_button)
 
+        # Label to display the selected CSV path
+        self.path_label = QLabel(f"Current CSV Path: {LOG_FILE}")
+        layout.addWidget(self.path_label)
+        
         # Clear data button
         self.clear_button = QPushButton("Clear Data")
         self.clear_button.clicked.connect(self.clear_data)
@@ -119,16 +111,24 @@ class SettingsWindow(QDialog):
         self.setLayout(layout)
 
     def save_and_return(self):
+        """Save settings and return to the MainProgram."""
+        global alarm_thresholds
+        alarm_thresholds["spo2"] = self.spo2_threshold.value()
+        self.accept()  # Close the window
+        
+    def save_and_return(self):
         """Save settings and return to the IntroWindow."""
         global alarm_thresholds
         alarm_thresholds["spo2"] = self.spo2_threshold.value()
         self.accept()  # Close the window
 
     def select_directory(self):
+        """Select a directory for saving the CSV file."""
         global LOG_FILE
         path = QFileDialog.getExistingDirectory(self, "Select Directory")
         if path:
             LOG_FILE = os.path.join(path, "sensor_data.csv")
+            self.path_label.setText(f"Current CSV Path: {LOG_FILE}")
             QMessageBox.information(self, "Success", f"Data will be saved to: {LOG_FILE}")
 
     def clear_data(self):
@@ -185,6 +185,11 @@ class CustomiseWindow(QDialog):
             graph_colors[graph] = color.name()
             self.sender().setStyleSheet(f"background-color: {color.name()}")
 
+    def save_and_return(self):
+        """Save settings and return to the MainProgram."""
+        for sensor, cb in self.checkboxes.items():
+            visible_sensors[sensor] = cb.isChecked()
+        self.accept()  # Close the window
 
 # Function to log sensor data
 def log_data(timestamp, accel, gyro, spo2, heart_rate, temp, hearttemp):
@@ -413,6 +418,16 @@ class MainProgram(QMainWindow):
 
         self.layout = QVBoxLayout(self.central_widget)
 
+        # Button to access the SettingsWindow
+        self.settings_button = QPushButton("Open Settings")
+        self.settings_button.clicked.connect(self.open_settings_window)
+        self.layout.addWidget(self.settings_button)
+        
+        # Button to access the CustomiseWindow
+        self.customise_button = QPushButton("Customise Graphs")
+        self.customise_button.clicked.connect(self.open_customise_window)
+        self.layout.addWidget(self.customise_button)
+        
         # Labels for displaying sensor data
         self.accel_label = QLabel("Accelerometer: N/A")
         self.layout.addWidget(self.accel_label)
@@ -440,8 +455,8 @@ class MainProgram(QMainWindow):
         self.ax_temp.set_title("Real-Time Temperature Data", fontsize=12)
         self.ax_temp.set_xlabel("Time", fontsize=10)
         self.ax_temp.set_ylabel("Temperature (°C)", fontsize=10)
-        self.line_temp, = self.ax_temp.plot([], [], lw=2, label="Body Temperature")
-        self.line_hearttemp, = self.ax_temp.plot([], [], lw=2, label="Heart Temperature")
+        self.line_temp, = self.ax_temp.plot([], [], lw=2, label="Body Temperature", color=graph_colors["temp"])
+        self.line_hearttemp, = self.ax_temp.plot([], [], lw=2, label="Heart Temperature", color=graph_colors["hearttemp"])
         self.ax_temp.legend()
         self.canvas_temp = FigureCanvas(self.fig_temp)
         self.layout.addWidget(self.canvas_temp)
@@ -451,8 +466,8 @@ class MainProgram(QMainWindow):
         self.ax_hr.set_title("Real-Time Heart Rate and SpO2", fontsize=12)
         self.ax_hr.set_xlabel("Time", fontsize=10)
         self.ax_hr.set_ylabel("Value", fontsize=10)
-        self.line_hr, = self.ax_hr.plot([], [], lw=2, label="Heart Rate (BPM)")
-        self.line_spo2, = self.ax_hr.plot([], [], lw=2, label="SpO2 (%)")
+        self.line_hr, = self.ax_hr.plot([], [], lw=2, label="Heart Rate (BPM)", color=graph_colors["hr"])
+        self.line_spo2, = self.ax_hr.plot([], [], lw=2, label="SpO2 (%)", color=graph_colors["spo2"])
         self.ax_hr.legend()
         self.canvas_hr = FigureCanvas(self.fig_hr)
         self.layout.addWidget(self.canvas_hr)
@@ -473,6 +488,32 @@ class MainProgram(QMainWindow):
         self.update_gui()
         self.update_graphs()
 
+    def open_customise_window(self):
+        """Open the CustomiseWindow from the MainProgram."""
+        self.customise_window = CustomiseWindow(self)  # Pass `self` as parent
+        if self.customise_window.exec_():
+            # Update graph colors and visibility
+            self.line_temp.set_color(graph_colors["temp"])
+            self.line_hearttemp.set_color(graph_colors["hearttemp"])
+            self.line_hr.set_color(graph_colors["hr"])
+            self.line_spo2.set_color(graph_colors["spo2"])
+
+            self.line_temp.set_visible(visible_sensors["temp"])
+            self.line_hearttemp.set_visible(visible_sensors["hearttemp"])
+            self.line_hr.set_visible(visible_sensors["heart_rate"])
+            self.line_spo2.set_visible(visible_sensors["spo2"])
+            
+            # Redraw the graphs
+            self.canvas_temp.draw()
+            self.canvas_hr.draw()
+            
+    def open_settings_window(self):
+        """Open the SettingsWindow from the MainProgram."""
+        self.settings_window = SettingsWindow(self)  # Pass `self` as parent
+        if self.settings_window.exec_():
+            # Save settings if the user clicks "Save and Return"
+            alarm_thresholds["spo2"] = self.settings_window.spo2_threshold.value()
+            
     def update_gui(self):
         global accel_data, gyro_data, spo2_data, heart_rate_data, temp_data, hearttemp_data
         self.accel_label.setText(f"Accelerometer: {accel_data}")

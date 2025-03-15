@@ -71,6 +71,8 @@ PROGRAM_VERSION = "1.0.0"
 # Global variable to track BLE connection status
 ble_connected = False
 
+# Global variable to track the last log time (log_data)
+last_log_time = None
 
 # Settings Window
 class SettingsWindow(QDialog):
@@ -109,7 +111,18 @@ class SettingsWindow(QDialog):
         self.clear_button.clicked.connect(self.clear_data)
         layout.addWidget(self.clear_button)
 
+        # Save and Return button
+        self.save_return_button = QPushButton("Save and Return")
+        self.save_return_button.clicked.connect(self.save_and_return)
+        layout.addWidget(self.save_return_button)
+        
         self.setLayout(layout)
+
+    def save_and_return(self):
+        """Save settings and return to the IntroWindow."""
+        global alarm_thresholds
+        alarm_thresholds["spo2"] = self.spo2_threshold.value()
+        self.accept()  # Close the window
 
     def select_directory(self):
         global LOG_FILE
@@ -153,7 +166,18 @@ class CustomiseWindow(QDialog):
             layout.addWidget(btn)
             self.color_buttons[graph] = btn
 
+        # Save and Return button
+        self.save_return_button = QPushButton("Save and Return")
+        self.save_return_button.clicked.connect(self.save_and_return)
+        layout.addWidget(self.save_return_button)
+
         self.setLayout(layout)
+
+    def save_and_return(self):
+        """Save settings and return to the IntroWindow."""
+        for sensor, cb in self.checkboxes.items():
+            visible_sensors[sensor] = cb.isChecked()
+        self.accept()  # Close the window
 
     def choose_color(self, graph):
         color = QColorDialog.getColor()
@@ -164,11 +188,16 @@ class CustomiseWindow(QDialog):
 
 # Function to log sensor data
 def log_data(timestamp, accel, gyro, spo2, heart_rate, temp, hearttemp):
-    """Log sensor data to a CSV file."""
-    with open(LOG_FILE, mode="a", newline="") as file:
-        writer = csv.writer(file)
-        writer.writerow([timestamp, accel, gyro, spo2, heart_rate, temp, hearttemp])
+    """Log sensor data to a CSV file once per second."""
+    global last_log_time
 
+    # Check if at least 1 second has passed since the last log
+    current_time = datetime.now()
+    if last_log_time is None or (current_time - last_log_time).total_seconds() >= 1:
+        with open(LOG_FILE, mode="a", newline="") as file:
+            writer = csv.writer(file)
+            writer.writerow([timestamp, accel, gyro, spo2, heart_rate, temp, hearttemp])
+        last_log_time = current_time  # Update the last log time
 
 # Function to play a sound
 def play_sound(filename):

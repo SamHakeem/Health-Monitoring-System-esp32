@@ -15,82 +15,116 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 import winsound
 import os
 import threading
+from qasync import QEventLoop, asyncSlot, asyncClose
 
-# Define UUIDs (must match those in the ESP32 code)
+# Defined UUIDs (matching those in the ESP32 code)
 SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 ACCEL_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 GYRO_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a9"
 SPO2_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26aa"
 HEART_RATE_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26ab"
 TEMP_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26ac"
-HEARTTEMP_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26af"  # New UUID for heart temperature
+HEARTTEMP_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26af"  # UUID for heart temperature (internal temperature)
 
 # ESP32 MAC Address
 ESP32_ADDRESS = "10:06:1c:17:65:7e"  # Replace with your ESP32's MAC address
 
-# Global variables for sensor data
-accel_data = "N/A"
-gyro_data = "N/A"
-spo2_data = "N/A"
-heart_rate_data = "N/A"
-temp_data = "N/A"
-hearttemp_data = "N/A"  # New variable for heart temperature data
+class SensorDataManager:
+    def __init__(self):
+        self.accel_data = "N/A"
+        self.gyro_data = "N/A"
+        self.spo2_data = "N/A"
+        self.heart_rate_data = "N/A"
+        self.temp_data = "N/A"
+        self.hearttemp_data = "N/A"  # New variable for heart temperature data
 
-# New global variables for customization
-visible_sensors = {
-    "accel": True,
-    "gyro": True,
-    "spo2": True,
-    "heart_rate": True,
-    "temp": True,
-    "hearttemp": True
-}
+        self.visible_sensors = {
+            "accel": True,
+            "gyro": True,
+            "spo2": True,
+            "heart_rate": True,
+            "temp": True,
+            "hearttemp": True
+        }
 
-graph_colors = {
-    "temp": "blue",
-    "hearttemp": "red",
-    "hr": "green",
-    "spo2": "purple"
-}
+        self.graph_colors = {
+            "temp": "blue",
+            "hearttemp": "red",
+            "hr": "green",
+            "spo2": "purple"
+        }
 
-alarm_thresholds = {
-    "spo2": 90,
-    "heart_rate_low": 60,
-    "heart_rate_high": 100
-}
+        self.alarm_thresholds = {
+            "spo2": 90,
+            "heart_rate_low": 60,
+            "heart_rate_high": 100
+        }
 
-# Global flag to control the BLE loop
-running = True
+        self.running = True
+        self.LOG_FILE = "sensor_data.csv"
+        self.PROGRAM_VERSION = "1.0.0"
+        self.ble_connected = False
+        self.last_log_time = None
 
-# Data logging setup
-LOG_FILE = "sensor_data.csv"
+    def log_data(self, timestamp, accel, gyro, spo2, heart_rate, temp, hearttemp):
+        """Log sensor data to a CSV file once per second."""
+        if self.last_log_time is None or (datetime.now() - self.last_log_time).total_seconds() >= 1:
+            with open(self.LOG_FILE, mode="a", newline="") as file:
+                writer = csv.writer(file)
+                writer.writerow([timestamp, accel, gyro, spo2, heart_rate, temp, hearttemp])
+            self.last_log_time = datetime.now()
 
-# Program version
-PROGRAM_VERSION = "1.0.0"
+    def play_sound(self, filename):
+        if os.path.exists(filename):
+            if os.name == "nt":  # Windows
+                winsound.PlaySound(filename, winsound.SND_ASYNC)
+            else:  # macOS/Linux
+                os.system(f"afplay {filename} &")
+        else:
+            print(f"Warning: Sound file '{filename}' not found.")
 
-# Global variable to track BLE connection status
-ble_connected = False
-
-# Global variable to track the last log time (log_data)
-last_log_time = None
+    def update_sensor_data(self, sensor_type, data):
+        value = data.decode("utf-8")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if sensor_type == "accel":
+            x, y, z = value.split(',')
+            self.accel_data = f"X: {x}, Y: {y}, Z: {z}"
+            self.log_data(timestamp, value, self.gyro_data, self.spo2_data, self.heart_rate_data, self.temp_data, self.hearttemp_data)
+        elif sensor_type == "gyro":
+            x, y, z = value.split(',')
+            self.gyro_data = f"X: {x}, Y: {y}, Z: {z}"
+            self.log_data(timestamp, self.accel_data, value, self.spo2_data, self.heart_rate_data, self.temp_data, self.hearttemp_data)
+        elif sensor_type == "spo2":
+            self.spo2_data = value
+            self.log_data(timestamp, self.accel_data, self.gyro_data, value, self.heart_rate_data, self.temp_data, self.hearttemp_data)
+        elif sensor_type == "heart_rate":
+            self.heart_rate_data = value
+            self.log_data(timestamp, self.accel_data, self.gyro_data, self.spo2_data, value, self.temp_data, self.hearttemp_data)
+        elif sensor_type == "temp":
+            self.temp_data = value
+            self.log_data(timestamp, self.accel_data, self.gyro_data, self.spo2_data, self.heart_rate_data, value, self.hearttemp_data)
+        elif sensor_type == "hearttemp":  # Handle heart temperature data
+            self.hearttemp_data = value
+            self.log_data(timestamp, self.accel_data, self.gyro_data, self.spo2_data, self.heart_rate_data, self.temp_data, value)
 
 # Settings Window
 class SettingsWindow(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, data_manager=None):
         super().__init__(parent)
+        self.data_manager = data_manager
         self.setWindowTitle("Settings")
         self.setGeometry(200, 200, 400, 400)
         layout = QVBoxLayout()
 
         # Alarm thresholds
         self.spo2_threshold = QSpinBox()
-        self.spo2_threshold.setValue(alarm_thresholds["spo2"])
+        self.spo2_threshold.setValue(self.data_manager.alarm_thresholds["spo2"])
         self.spo2_threshold.setRange(0, 100)
         layout.addWidget(QLabel("SpO2 Alarm Threshold (%)"))
         layout.addWidget(self.spo2_threshold)
 
         # Label to display the selected CSV path
-        self.path_label = QLabel(f"Current CSV Path: {LOG_FILE}")
+        self.path_label = QLabel(f"Current CSV Path: {self.data_manager.LOG_FILE}")
         layout.addWidget(self.path_label)
         
         # Data directory selection
@@ -112,55 +146,46 @@ class SettingsWindow(QDialog):
 
     def save_and_return(self):
         """Save settings and return to the MainProgram."""
-        global alarm_thresholds
-        alarm_thresholds["spo2"] = self.spo2_threshold.value()
-        self.accept()  # Close the window
-        
-    def save_and_return(self):
-        """Save settings and return to the IntroWindow."""
-        global alarm_thresholds
-        alarm_thresholds["spo2"] = self.spo2_threshold.value()
+        self.data_manager.alarm_thresholds["spo2"] = self.spo2_threshold.value()
         self.accept()  # Close the window
 
     def select_directory(self):
         """Select a directory for saving the CSV file."""
-        global LOG_FILE
         path = QFileDialog.getExistingDirectory(self, "Select Directory")
         if path:
-            LOG_FILE = os.path.join(path, "sensor_data.csv")
-            self.path_label.setText(f"Current CSV Path: {LOG_FILE}")
-            QMessageBox.information(self, "Success", f"Data will be saved to: {LOG_FILE}")
+            self.data_manager.LOG_FILE = os.path.join(path, "sensor_data.csv")
+            self.path_label.setText(f"Current CSV Path: {self.data_manager.LOG_FILE}")
+            QMessageBox.information(self, "Success", f"Data will be saved to: {self.data_manager.LOG_FILE}")
 
     def clear_data(self):
-        with open(LOG_FILE, "w") as f:
+        with open(self.data_manager.LOG_FILE, "w") as f:
             f.write("")
         QMessageBox.information(self, "Success", "Data cleared successfully")
 
     def accept(self):
-        global LOG_FILE
-        alarm_thresholds["spo2"] = self.spo2_threshold.value()
+        self.data_manager.alarm_thresholds["spo2"] = self.spo2_threshold.value()
         super().accept()
-
 
 # Customise Window
 class CustomiseWindow(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, data_manager=None):
         super().__init__(parent)
+        self.data_manager = data_manager
         self.setWindowTitle("Customise")
         self.setGeometry(200, 200, 400, 400)
         layout = QVBoxLayout()
 
         # Sensor visibility checkboxes
         self.checkboxes = {}
-        for sensor in visible_sensors:
+        for sensor in self.data_manager.visible_sensors:
             cb = QCheckBox(sensor.replace("_", " ").title())
-            cb.setChecked(visible_sensors[sensor])
+            cb.setChecked(self.data_manager.visible_sensors[sensor])
             self.checkboxes[sensor] = cb
             layout.addWidget(cb)
 
         # Color pickers
         self.color_buttons = {}
-        for graph in graph_colors:
+        for graph in self.data_manager.graph_colors:
             btn = QPushButton(f"Choose {graph.title()} Color")
             btn.clicked.connect(lambda _, g=graph: self.choose_color(g))
             layout.addWidget(btn)
@@ -176,109 +201,20 @@ class CustomiseWindow(QDialog):
     def save_and_return(self):
         """Save settings and return to the IntroWindow."""
         for sensor, cb in self.checkboxes.items():
-            visible_sensors[sensor] = cb.isChecked()
+            self.data_manager.visible_sensors[sensor] = cb.isChecked()
         self.accept()  # Close the window
 
     def choose_color(self, graph):
         color = QColorDialog.getColor()
         if color.isValid():
-            graph_colors[graph] = color.name()
+            self.data_manager.graph_colors[graph] = color.name()
             self.sender().setStyleSheet(f"background-color: {color.name()}")
-
-    def save_and_return(self):
-        """Save settings and return to the MainProgram."""
-        for sensor, cb in self.checkboxes.items():
-            visible_sensors[sensor] = cb.isChecked()
-        self.accept()  # Close the window
-
-# Function to log sensor data
-def log_data(timestamp, accel, gyro, spo2, heart_rate, temp, hearttemp):
-    """Log sensor data to a CSV file once per second."""
-    global last_log_time
-
-    # Check if at least 1 second has passed since the last log
-    current_time = datetime.now()
-    if last_log_time is None or (current_time - last_log_time).total_seconds() >= 1:
-        with open(LOG_FILE, mode="a", newline="") as file:
-            writer = csv.writer(file)
-            writer.writerow([timestamp, accel, gyro, spo2, heart_rate, temp, hearttemp])
-        last_log_time = current_time  # Update the last log time
-
-# Function to play a sound
-def play_sound(filename):
-    if os.path.exists(filename):
-        if os.name == "nt":  # Windows
-            winsound.PlaySound(filename, winsound.SND_ASYNC)
-        else:  # macOS/Linux
-            os.system(f"afplay {filename} &")
-    else:
-        print(f"Warning: Sound file '{filename}' not found.")
-
-
-# Callback function to update sensor data
-def update_sensor_data(sensor_type, data):
-    global accel_data, gyro_data, spo2_data, heart_rate_data, temp_data, hearttemp_data
-    value = data.decode("utf-8")
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if sensor_type == "accel":
-        x, y, z = value.split(',')
-        accel_data = f"X: {x}, Y: {y}, Z: {z}"
-        log_data(timestamp, value, gyro_data, spo2_data, heart_rate_data, temp_data, hearttemp_data)
-    elif sensor_type == "gyro":
-        x, y, z = value.split(',')
-        gyro_data = f"X: {x}, Y: {y}, Z: {z}"
-        log_data(timestamp, accel_data, value, spo2_data, heart_rate_data, temp_data, hearttemp_data)
-    elif sensor_type == "spo2":
-        spo2_data = value
-        log_data(timestamp, accel_data, gyro_data, value, heart_rate_data, temp_data, hearttemp_data)
-    elif sensor_type == "heart_rate":
-        heart_rate_data = value
-        log_data(timestamp, accel_data, gyro_data, spo2_data, value, temp_data, hearttemp_data)
-    elif sensor_type == "temp":
-        temp_data = value
-        log_data(timestamp, accel_data, gyro_data, spo2_data, heart_rate_data, value, hearttemp_data)
-    elif sensor_type == "hearttemp":  # Handle heart temperature data
-        hearttemp_data = value
-        log_data(timestamp, accel_data, gyro_data, spo2_data, heart_rate_data, temp_data, value)
-
-
-# Async function to connect to the ESP32 and read data
-async def read_ble_data(address):
-    global running, ble_connected
-    while running:
-        try:
-            async with BleakClient(address) as client:
-                print(f"Connected to {address}")
-                ble_connected = True
-                intro_window.update_connection_status(ble_connected)
-                if hasattr(intro_window, 'connect_window'):
-                    intro_window.connect_window.close()  # Close the connect window after successful connection
-
-                # Enable notifications for all characteristics
-                await client.start_notify(ACCEL_UUID, lambda _, data: update_sensor_data("accel", data))
-                await client.start_notify(GYRO_UUID, lambda _, data: update_sensor_data("gyro", data))
-                await client.start_notify(SPO2_UUID, lambda _, data: update_sensor_data("spo2", data))
-                await client.start_notify(HEART_RATE_UUID, lambda _, data: update_sensor_data("heart_rate", data))
-                await client.start_notify(TEMP_UUID, lambda _, data: update_sensor_data("temp", data))
-                await client.start_notify(HEARTTEMP_UUID, lambda _, data: update_sensor_data("hearttemp", data))  # Heart temperature notifications
-
-                print("Notifications enabled. Waiting for updates...")
-                while running:
-                    await asyncio.sleep(0.1)  # Keep the connection alive
-        except Exception as e:
-            print(f"BLE connection error: {e}. Retrying in 5 seconds...")
-            ble_connected = False
-            intro_window.update_connection_status(ble_connected)
-            if main_program_window and main_program_window.isVisible():
-                QMessageBox.critical(main_program_window, "Disconnected", "Bluetooth device disconnected. Please reconnect.")
-                main_program_window.return_to_intro()
-            await asyncio.sleep(5)
-
 
 # Introductory Window
 class IntroWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, data_manager):
         super().__init__()
+        self.data_manager = data_manager
         self.setWindowTitle("Health Monitoring System")
         self.setGeometry(100, 100, 600, 400)
 
@@ -288,7 +224,7 @@ class IntroWindow(QMainWindow):
         self.layout = QVBoxLayout(self.central_widget)
 
         # Program version label
-        self.version_label = QLabel(f"Version: {PROGRAM_VERSION}")
+        self.version_label = QLabel(f"Version: {self.data_manager.PROGRAM_VERSION}")
         self.version_label.setAlignment(Qt.AlignRight | Qt.AlignTop)
         self.layout.addWidget(self.version_label)
 
@@ -372,44 +308,74 @@ class IntroWindow(QMainWindow):
         device_address = selected_device.text().split(" - ")[-1]
 
         # Start the BLE connection in a separate thread
-        threading.Thread(target=asyncio.run, args=(read_ble_data(device_address),), daemon=True).start()
+        threading.Thread(target=asyncio.run, args=(self.read_ble_data(device_address),), daemon=True).start()
+
+    async def read_ble_data(self, address):
+        while self.data_manager.running:
+            try:
+                async with BleakClient(address) as client:
+                    print(f"Connected to {address}")
+                    self.data_manager.ble_connected = True
+                    self.update_connection_status(self.data_manager.ble_connected)
+                    if hasattr(self, 'connect_window'):
+                        self.connect_window.close()  # Close the connect window after successful connection
+
+                    # Enable notifications for all characteristics
+                    await client.start_notify(ACCEL_UUID, lambda _, data: self.data_manager.update_sensor_data("accel", data))
+                    await client.start_notify(GYRO_UUID, lambda _, data: self.data_manager.update_sensor_data("gyro", data))
+                    await client.start_notify(SPO2_UUID, lambda _, data: self.data_manager.update_sensor_data("spo2", data))
+                    await client.start_notify(HEART_RATE_UUID, lambda _, data: self.data_manager.update_sensor_data("heart_rate", data))
+                    await client.start_notify(TEMP_UUID, lambda _, data: self.data_manager.update_sensor_data("temp", data))
+                    await client.start_notify(HEARTTEMP_UUID, lambda _, data: self.data_manager.update_sensor_data("hearttemp", data))  # Heart temperature notifications
+
+                    print("Notifications enabled. Waiting for updates...")
+                    while self.data_manager.running:
+                        await asyncio.sleep(0.1)  # Keep the connection alive
+            except Exception as e:
+                print(f"BLE connection error: {e}. Retrying in 5 seconds...")
+                self.data_manager.ble_connected = False
+                self.update_connection_status(self.data_manager.ble_connected)
+                if main_program_window and main_program_window.isVisible():
+                    QMessageBox.critical(main_program_window, "Disconnected", "Bluetooth device disconnected. Please reconnect.")
+                    main_program_window.return_to_intro()
+                await asyncio.sleep(5)
 
     def open_settings_window(self):
         """Open the Settings window to input age, weight, and clear data."""
-        self.settings_window = SettingsWindow()
+        self.settings_window = SettingsWindow(self, self.data_manager)
         if self.settings_window.exec_():
             # Update alarm thresholds
-            alarm_thresholds["spo2"] = self.settings_window.spo2_threshold.value()
+            self.data_manager.alarm_thresholds["spo2"] = self.settings_window.spo2_threshold.value()
 
     def clear_data(self):
         """Clear saved data."""
-        with open(LOG_FILE, "w") as file:
+        with open(self.data_manager.LOG_FILE, "w") as file:
             file.write("")  # Clear the file
         print("Data cleared.")
 
     def open_customise_window(self):
         """Open the Customise window to change data presentation."""
-        self.customise_window = CustomiseWindow()
+        self.customise_window = CustomiseWindow(self, self.data_manager)
         if self.customise_window.exec_():
             # Save settings
             for sensor, cb in self.customise_window.checkboxes.items():
-                visible_sensors[sensor] = cb.isChecked()
+                self.data_manager.visible_sensors[sensor] = cb.isChecked()
 
     def start_program(self):
         """Start the main program."""
-        if not ble_connected:
+        if not self.data_manager.ble_connected:
             QMessageBox.critical(self, "Error", "Please connect to a device first!")
             return
         self.close()  # Close the introductory window
         global main_program_window
-        main_program_window = MainProgram()
+        main_program_window = MainProgram(self.data_manager)
         main_program_window.show()
-
 
 # Main Program
 class MainProgram(QMainWindow):
-    def __init__(self):
+    def __init__(self, data_manager):
         super().__init__()
+        self.data_manager = data_manager
         self.setWindowTitle("ESP32 Sensor Monitor")
         self.setGeometry(100, 100, 1000, 800)
 
@@ -455,8 +421,8 @@ class MainProgram(QMainWindow):
         self.ax_temp.set_title("Real-Time Temperature Data", fontsize=12)
         self.ax_temp.set_xlabel("Time", fontsize=10)
         self.ax_temp.set_ylabel("Temperature (°C)", fontsize=10)
-        self.line_temp, = self.ax_temp.plot([], [], lw=2, label="Body Temperature", color=graph_colors["temp"])
-        self.line_hearttemp, = self.ax_temp.plot([], [], lw=2, label="Heart Temperature", color=graph_colors["hearttemp"])
+        self.line_temp, = self.ax_temp.plot([], [], lw=2, label="Body Temperature", color=self.data_manager.graph_colors["temp"])
+        self.line_hearttemp, = self.ax_temp.plot([], [], lw=2, label="Heart Temperature", color=self.data_manager.graph_colors["hearttemp"])
         self.ax_temp.legend()
         self.canvas_temp = FigureCanvas(self.fig_temp)
         self.layout.addWidget(self.canvas_temp)
@@ -466,8 +432,8 @@ class MainProgram(QMainWindow):
         self.ax_hr.set_title("Real-Time Heart Rate and SpO2", fontsize=12)
         self.ax_hr.set_xlabel("Time", fontsize=10)
         self.ax_hr.set_ylabel("Value", fontsize=10)
-        self.line_hr, = self.ax_hr.plot([], [], lw=2, label="Heart Rate (BPM)", color=graph_colors["hr"])
-        self.line_spo2, = self.ax_hr.plot([], [], lw=2, label="SpO2 (%)", color=graph_colors["spo2"])
+        self.line_hr, = self.ax_hr.plot([], [], lw=2, label="Heart Rate (BPM)", color=self.data_manager.graph_colors["hr"])
+        self.line_spo2, = self.ax_hr.plot([], [], lw=2, label="SpO2 (%)", color=self.data_manager.graph_colors["spo2"])
         self.ax_hr.legend()
         self.canvas_hr = FigureCanvas(self.fig_hr)
         self.layout.addWidget(self.canvas_hr)
@@ -490,18 +456,18 @@ class MainProgram(QMainWindow):
 
     def open_customise_window(self):
         """Open the CustomiseWindow from the MainProgram."""
-        self.customise_window = CustomiseWindow(self)  # Pass `self` as parent
+        self.customise_window = CustomiseWindow(self, self.data_manager)  # Pass `self` as parent
         if self.customise_window.exec_():
             # Update graph colors and visibility
-            self.line_temp.set_color(graph_colors["temp"])
-            self.line_hearttemp.set_color(graph_colors["hearttemp"])
-            self.line_hr.set_color(graph_colors["hr"])
-            self.line_spo2.set_color(graph_colors["spo2"])
+            self.line_temp.set_color(self.data_manager.graph_colors["temp"])
+            self.line_hearttemp.set_color(self.data_manager.graph_colors["hearttemp"])
+            self.line_hr.set_color(self.data_manager.graph_colors["hr"])
+            self.line_spo2.set_color(self.data_manager.graph_colors["spo2"])
 
-            self.line_temp.set_visible(visible_sensors["temp"])
-            self.line_hearttemp.set_visible(visible_sensors["hearttemp"])
-            self.line_hr.set_visible(visible_sensors["heart_rate"])
-            self.line_spo2.set_visible(visible_sensors["spo2"])
+            self.line_temp.set_visible(self.data_manager.visible_sensors["temp"])
+            self.line_hearttemp.set_visible(self.data_manager.visible_sensors["hearttemp"])
+            self.line_hr.set_visible(self.data_manager.visible_sensors["heart_rate"])
+            self.line_spo2.set_visible(self.data_manager.visible_sensors["spo2"])
             
             # Redraw the graphs
             self.canvas_temp.draw()
@@ -509,34 +475,33 @@ class MainProgram(QMainWindow):
             
     def open_settings_window(self):
         """Open the SettingsWindow from the MainProgram."""
-        self.settings_window = SettingsWindow(self)  # Pass `self` as parent
+        self.settings_window = SettingsWindow(self, self.data_manager)  # Pass `self` as parent
         if self.settings_window.exec_():
             # Save settings if the user clicks "Save and Return"
-            alarm_thresholds["spo2"] = self.settings_window.spo2_threshold.value()
+            self.data_manager.alarm_thresholds["spo2"] = self.settings_window.spo2_threshold.value()
             
     def update_gui(self):
-        global accel_data, gyro_data, spo2_data, heart_rate_data, temp_data, hearttemp_data
-        self.accel_label.setText(f"Accelerometer: {accel_data}")
-        self.gyro_label.setText(f"Gyroscope: {gyro_data}")
-        self.spo2_label.setText(f"SpO2: {spo2_data}%")
-        self.heart_rate_label.setText(f"Heart Rate: {heart_rate_data} BPM")
-        self.temp_label.setText(f"Temperature: {temp_data} °C")
-        self.hearttemp_label.setText(f"Heart Temperature: {hearttemp_data} °C")
+        self.accel_label.setText(f"Accelerometer: {self.data_manager.accel_data}")
+        self.gyro_label.setText(f"Gyroscope: {self.data_manager.gyro_data}")
+        self.spo2_label.setText(f"SpO2: {self.data_manager.spo2_data}%")
+        self.heart_rate_label.setText(f"Heart Rate: {self.data_manager.heart_rate_data} BPM")
+        self.temp_label.setText(f"Temperature: {self.data_manager.temp_data} °C")
+        self.hearttemp_label.setText(f"Heart Temperature: {self.data_manager.hearttemp_data} °C")
 
         try:
-            spo2 = float(spo2_data) if spo2_data != "N/A" else 0
-            hr = float(heart_rate_data) if heart_rate_data != "N/A" else 0
+            spo2 = float(self.data_manager.spo2_data) if self.data_manager.spo2_data != "N/A" else 0
+            hr = float(self.data_manager.heart_rate_data) if self.data_manager.heart_rate_data != "N/A" else 0
 
             alarms = []
-            if spo2 < alarm_thresholds["spo2"]:
+            if spo2 < self.data_manager.alarm_thresholds["spo2"]:
                 alarms.append("Low SpO2")
-                play_sound("alarm.wav")
-            if hr < alarm_thresholds["heart_rate_low"]:
+                self.data_manager.play_sound("alarm.wav")
+            if hr < self.data_manager.alarm_thresholds["heart_rate_low"]:
                 alarms.append("Low Heart Rate")
-                play_sound("alarm.wav")
-            if hr > alarm_thresholds["heart_rate_high"]:
+                self.data_manager.play_sound("alarm.wav")
+            if hr > self.data_manager.alarm_thresholds["heart_rate_high"]:
                 alarms.append("High Heart Rate")
-                play_sound("alarm.wav")
+                self.data_manager.play_sound("alarm.wav")
 
             self.alarm_label.setText("ALERTS: " + ", ".join(alarms) if alarms else "No Alarms")
         except ValueError:
@@ -545,15 +510,14 @@ class MainProgram(QMainWindow):
         QTimer.singleShot(100, self.update_gui)  # Schedule the next update (every 100ms)
 
     def update_graphs(self):
-        global timestamps, temp_values, hearttemp_values, hr_values, spo2_values
-        if temp_data != "N/A" and hearttemp_data != "N/A" and heart_rate_data != "N/A" and spo2_data != "N/A":
+        if self.data_manager.temp_data != "N/A" and self.data_manager.hearttemp_data != "N/A" and self.data_manager.heart_rate_data != "N/A" and self.data_manager.spo2_data != "N/A":
             # Convert the current time to a datetime object
             timestamp = datetime.now()
             self.timestamps.append(timestamp)
-            self.temp_values.append(float(temp_data))
-            self.hearttemp_values.append(float(hearttemp_data))
-            self.hr_values.append(float(heart_rate_data))
-            self.spo2_values.append(float(spo2_data))
+            self.temp_values.append(float(self.data_manager.temp_data))
+            self.hearttemp_values.append(float(self.data_manager.hearttemp_data))
+            self.hr_values.append(float(self.data_manager.heart_rate_data))
+            self.spo2_values.append(float(self.data_manager.spo2_data))
 
             # Limit to the last 10 data points
             if len(self.timestamps) > 10:
@@ -578,31 +542,31 @@ class MainProgram(QMainWindow):
             self.canvas_hr.draw()
 
             # Apply visibility settings
-            self.line_temp.set_visible(visible_sensors["temp"])
-            self.line_hearttemp.set_visible(visible_sensors["hearttemp"])
-            self.line_hr.set_visible(visible_sensors["heart_rate"])
-            self.line_spo2.set_visible(visible_sensors["spo2"])
+            self.line_temp.set_visible(self.data_manager.visible_sensors["temp"])
+            self.line_hearttemp.set_visible(self.data_manager.visible_sensors["hearttemp"])
+            self.line_hr.set_visible(self.data_manager.visible_sensors["heart_rate"])
+            self.line_spo2.set_visible(self.data_manager.visible_sensors["spo2"])
 
             # Apply colors
-            self.line_temp.set_color(graph_colors["temp"])
-            self.line_hearttemp.set_color(graph_colors["hearttemp"])
-            self.line_hr.set_color(graph_colors["hr"])
-            self.line_spo2.set_color(graph_colors["spo2"])
+            self.line_temp.set_color(self.data_manager.graph_colors["temp"])
+            self.line_hearttemp.set_color(self.data_manager.graph_colors["hearttemp"])
+            self.line_hr.set_color(self.data_manager.graph_colors["hr"])
+            self.line_spo2.set_color(self.data_manager.graph_colors["spo2"])
 
         QTimer.singleShot(1000, self.update_graphs)
 
     def return_to_intro(self):
         """Return to the introductory window."""
         self.close()
-        self.intro_window = IntroWindow()
+        self.intro_window = IntroWindow(self.data_manager)
         self.intro_window.show()
-
 
 # Start the introductory window
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon('app_icon.png'))
 
-    intro_window = IntroWindow()
+    data_manager = SensorDataManager()
+    intro_window = IntroWindow(data_manager)
     intro_window.show()
     sys.exit(app.exec_())

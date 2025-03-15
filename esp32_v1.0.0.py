@@ -89,15 +89,15 @@ class SettingsWindow(QDialog):
         layout.addWidget(QLabel("SpO2 Alarm Threshold (%)"))
         layout.addWidget(self.spo2_threshold)
 
-        # Data directory selection
-        self.path_button = QPushButton("Select Data Directory")
-        self.path_button.clicked.connect(self.select_directory)
-        layout.addWidget(self.path_button)
-
         # Label to display the selected CSV path
         self.path_label = QLabel(f"Current CSV Path: {LOG_FILE}")
         layout.addWidget(self.path_label)
         
+        # Data directory selection
+        self.path_button = QPushButton("Select Data Directory")
+        self.path_button.clicked.connect(self.select_directory)
+        layout.addWidget(self.path_button)
+ 
         # Clear data button
         self.clear_button = QPushButton("Clear Data")
         self.clear_button.clicked.connect(self.clear_data)

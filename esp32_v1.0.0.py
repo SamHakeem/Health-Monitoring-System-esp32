@@ -26,8 +26,8 @@ HEART_RATE_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26ab"
 TEMP_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26ac"
 HEARTTEMP_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26af"  # UUID for heart temperature (internal temperature)
 
-# ESP32 MAC Address
-ESP32_ADDRESS = "10:06:1c:17:65:7e"  # Replace with your ESP32's MAC address
+# ESP32 MAC Address (for testing purposes only)
+# ESP32_ADDRESS = "10:06:1c:17:65:7e"
 
 class SensorDataManager:
     def __init__(self):
@@ -36,7 +36,7 @@ class SensorDataManager:
         self.spo2_data = "N/A"
         self.heart_rate_data = "N/A"
         self.temp_data = "N/A"
-        self.hearttemp_data = "N/A"  # New variable for heart temperature data
+        self.hearttemp_data = "N/A" 
 
         self.visible_sensors = {
             "accel": True,
@@ -65,6 +65,8 @@ class SensorDataManager:
         self.PROGRAM_VERSION = "1.0.0"
         self.ble_connected = False
         self.last_log_time = None
+        self.graph_data_points = 10  # Default number of data points to display
+
 
     def log_data(self, timestamp, accel, gyro, spo2, heart_rate, temp, hearttemp):
         """Log sensor data to a CSV file once per second."""
@@ -183,6 +185,13 @@ class CustomiseWindow(QDialog):
             self.checkboxes[sensor] = cb
             layout.addWidget(cb)
 
+        # Spin box for dynamic graph limits
+        self.data_points_spinbox = QSpinBox()
+        self.data_points_spinbox.setValue(self.data_manager.graph_data_points)
+        self.data_points_spinbox.setRange(10, 1000)  # Allow between 10 and 1000 data points
+        layout.addWidget(QLabel("Number of Data Points to Display:"))
+        layout.addWidget(self.data_points_spinbox)
+        
         # Color pickers
         self.color_buttons = {}
         for graph in self.data_manager.graph_colors:
@@ -202,6 +211,7 @@ class CustomiseWindow(QDialog):
         """Save settings and return to the IntroWindow."""
         for sensor, cb in self.checkboxes.items():
             self.data_manager.visible_sensors[sensor] = cb.isChecked()
+        self.data_manager.graph_data_points = self.data_points_spinbox.value()        
         self.accept()  # Close the window
 
     def choose_color(self, graph):
@@ -339,6 +349,11 @@ class IntroWindow(QMainWindow):
                     QMessageBox.critical(main_program_window, "Disconnected", "Bluetooth device disconnected. Please reconnect.")
                     main_program_window.return_to_intro()
                 await asyncio.sleep(5)
+            finally:
+                # Cleanup resources
+                if hasattr(self, 'client') and self.client.is_connected:
+                    await self.client.disconnect()
+                    print("BLE client disconnected and resources released.")
 
     def open_settings_window(self):
         """Open the Settings window to input age, weight, and clear data."""
@@ -519,13 +534,14 @@ class MainProgram(QMainWindow):
             self.hr_values.append(float(self.data_manager.heart_rate_data))
             self.spo2_values.append(float(self.data_manager.spo2_data))
 
-            # Limit to the last 10 data points
-            if len(self.timestamps) > 10:
-                self.timestamps.pop(0)
-                self.temp_values.pop(0)
-                self.hearttemp_values.pop(0)
-                self.hr_values.pop(0)
-                self.spo2_values.pop(0)
+            # Limit to the last N data points (dynamic limit)
+            max_points = self.data_manager.graph_data_points
+            if len(self.timestamps) > max_points:
+                self.timestamps = self.timestamps[-max_points:]
+                self.temp_values = self.temp_values[-max_points:]
+                self.hearttemp_values = self.hearttemp_values[-max_points:]
+                self.hr_values = self.hr_values[-max_points:]
+                self.spo2_values = self.spo2_values[-max_points:]
 
             # Update the temperature graph
             self.line_temp.set_data(self.timestamps, self.temp_values)

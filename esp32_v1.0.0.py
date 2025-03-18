@@ -4,12 +4,13 @@ import sys
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QLabel, QPushButton, QVBoxLayout, QWidget, QListWidget,
     QMessageBox, QCheckBox, QColorDialog, QFileDialog, QDialog, QSpinBox, QLineEdit,
-    QHBoxLayout, QTextEdit, QGraphicsView, QGraphicsScene
+    QHBoxLayout, QGridLayout, QTextEdit, QGraphicsView, QGraphicsScene
 )
 from PyQt5.QtCore import Qt, QTimer, QDateTime
-from PyQt5.QtGui import QPixmap, QImage, QIcon
+from PyQt5.QtGui import QPixmap, QFont, QImage, QIcon
 import csv
 from datetime import datetime
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 import winsound
@@ -115,25 +116,26 @@ class SettingsWindow(QDialog):
         super().__init__(parent)
         self.data_manager = data_manager
         self.setWindowTitle("Settings")
-        self.setGeometry(200, 200, 400, 400)
-        layout = QVBoxLayout()
+        self.setStyleSheet("background: #0B2E33; color: #93B1B5;")
 
-        # Alarm thresholds
+        layout = QVBoxLayout()
+        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        # SpO2 threshold
         self.spo2_threshold = QSpinBox()
         self.spo2_threshold.setValue(self.data_manager.alarm_thresholds["spo2"])
         self.spo2_threshold.setRange(0, 100)
         layout.addWidget(QLabel("SpO2 Alarm Threshold (%)"))
         layout.addWidget(self.spo2_threshold)
 
-        # Label to display the selected CSV path
+        # CSV path label and button
         self.path_label = QLabel(f"Current CSV Path: {self.data_manager.LOG_FILE}")
         layout.addWidget(self.path_label)
-        
-        # Data directory selection
         self.path_button = QPushButton("Select Data Directory")
         self.path_button.clicked.connect(self.select_directory)
         layout.addWidget(self.path_button)
- 
+
         # Clear data button
         self.clear_button = QPushButton("Clear Data")
         self.clear_button.clicked.connect(self.clear_data)
@@ -143,8 +145,10 @@ class SettingsWindow(QDialog):
         self.save_return_button = QPushButton("Save and Return")
         self.save_return_button.clicked.connect(self.save_and_return)
         layout.addWidget(self.save_return_button)
-        
+
         self.setLayout(layout)
+        self.adjustSize()
+        self.setFixedSize(self.size())
 
     def save_and_return(self):
         """Save settings and return to the MainProgram."""
@@ -174,31 +178,42 @@ class CustomiseWindow(QDialog):
         super().__init__(parent)
         self.data_manager = data_manager
         self.setWindowTitle("Customise")
-        self.setGeometry(200, 200, 400, 400)
-        layout = QVBoxLayout()
+        self.setStyleSheet("background: #0B2E33; color: #93B1B5;")
 
-        # Sensor visibility checkboxes
-        self.checkboxes = {}
-        for sensor in self.data_manager.visible_sensors:
+        layout = QVBoxLayout()
+        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        # Checkboxes in a 3x2 grid
+        self.grid_layout = QGridLayout()
+        self.grid_layout.setSpacing(10)
+        sensors = list(self.data_manager.visible_sensors.keys())
+        for i, sensor in enumerate(sensors):
+            row = i // 2
+            col = i % 2
             cb = QCheckBox(sensor.replace("_", " ").title())
             cb.setChecked(self.data_manager.visible_sensors[sensor])
-            self.checkboxes[sensor] = cb
-            layout.addWidget(cb)
+            self.grid_layout.addWidget(cb, row, col)
+        layout.addLayout(self.grid_layout)
 
-        # Spin box for dynamic graph limits
+        # Spin box for data points
         self.data_points_spinbox = QSpinBox()
         self.data_points_spinbox.setValue(self.data_manager.graph_data_points)
-        self.data_points_spinbox.setRange(10, 1000)  # Allow between 10 and 1000 data points
+        self.data_points_spinbox.setRange(10, 1000)
         layout.addWidget(QLabel("Number of Data Points to Display:"))
         layout.addWidget(self.data_points_spinbox)
-        
-        # Color pickers
-        self.color_buttons = {}
-        for graph in self.data_manager.graph_colors:
+
+        # Color buttons in a 2x2 grid
+        self.color_grid_layout = QGridLayout()
+        self.color_grid_layout.setSpacing(10)
+        graphs = list(self.data_manager.graph_colors.keys())
+        for i, graph in enumerate(graphs):
+            row = i // 2
+            col = i % 2
             btn = QPushButton(f"Choose {graph.title()} Color")
             btn.clicked.connect(lambda _, g=graph: self.choose_color(g))
-            layout.addWidget(btn)
-            self.color_buttons[graph] = btn
+            self.color_grid_layout.addWidget(btn, row, col)
+        layout.addLayout(self.color_grid_layout)
 
         # Save and Return button
         self.save_return_button = QPushButton("Save and Return")
@@ -206,6 +221,8 @@ class CustomiseWindow(QDialog):
         layout.addWidget(self.save_return_button)
 
         self.setLayout(layout)
+        self.adjustSize()
+        self.setFixedSize(self.size())
 
     def save_and_return(self):
         """Save settings and return to the IntroWindow."""
@@ -226,7 +243,8 @@ class IntroWindow(QMainWindow):
         super().__init__()
         self.data_manager = data_manager
         self.setWindowTitle("Health Monitoring System")
-        self.setGeometry(100, 100, 600, 400)
+        self.setGeometry(100, 100, 500, 400)
+        self.setStyleSheet("background: #0B2E33; color: #93B1B5;")
 
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
@@ -240,31 +258,46 @@ class IntroWindow(QMainWindow):
 
         # Main label (centered)
         self.main_label = QLabel("Health Monitoring System")
-        self.main_label.setStyleSheet("font-size: 20px; font-weight: bold;")
+        self.main_label.setFont(QFont("Roboto", 24))
+        self.main_label.setStyleSheet("font-size: 28px; font-weight: bold;")
         self.main_label.setAlignment(Qt.AlignCenter)
         self.layout.addWidget(self.main_label)
 
         # Buttons
         self.connect_button = QPushButton("Connect")
+        self.connect_button.setIcon(QIcon("connect_icon.png"))
+        self.connect_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; border-radius: 10px; padding: 5px; }"
+                                         "QPushButton:hover { background-color: #45a049; }")
         self.connect_button.clicked.connect(self.open_connect_window)
         self.layout.addWidget(self.connect_button)
 
         self.settings_button = QPushButton("Settings")
+        self.settings_button.setIcon(QIcon("settings_icon.png"))
+        self.settings_button.setStyleSheet("QPushButton { background-color: #008CBA; color: white; border-radius: 10px; padding: 5px; }"
+                                          "QPushButton:hover { background-color: #007B9E; }")
         self.settings_button.clicked.connect(self.open_settings_window)
         self.layout.addWidget(self.settings_button)
 
         self.customise_button = QPushButton("Customise")
+        self.customise_button.setIcon(QIcon("customise_icon.png"))
+        self.customise_button.setStyleSheet("QPushButton { background-color: #FFA500; color: white; border-radius: 10px; padding: 5px; }"
+                                            "QPushButton:hover { background-color: #FF8C00; }")
         self.customise_button.clicked.connect(self.open_customise_window)
         self.layout.addWidget(self.customise_button)
 
         self.start_button = QPushButton("Start")
         self.start_button.clicked.connect(self.start_program)
+        self.start_button.setIcon(QIcon("start_icon.png"))
+        self.start_button.setStyleSheet("QPushButton { background-color: #f44336; color: white; border-radius: 10px; padding: 5px; }"
+                                       "QPushButton:hover { background-color: #e53935; }")
         self.layout.addWidget(self.start_button)
 
         # Connection status label (centered)
         self.connection_status = QLabel("Device: Not Connected")
-        self.connection_status.setStyleSheet("font-size: 12px;")
+        self.connection_status.setFont(QFont("Roboto", 10))
         self.connection_status.setAlignment(Qt.AlignCenter)
+        self.connection_status.setStyleSheet("color: #FF6347;")  # Red for disconnect
+
         self.layout.addWidget(self.connection_status)
 
     def update_connection_status(self, connected):
@@ -408,26 +441,39 @@ class MainProgram(QMainWindow):
         self.customise_button = QPushButton("Customise Graphs")
         self.customise_button.clicked.connect(self.open_customise_window)
         self.layout.addWidget(self.customise_button)
-        
-        # Labels for displaying sensor data
+
+        # Create a horizontal layout for the sensor data boxes
+        self.sensor_data_layout = QHBoxLayout()
+
+        # Create QLabel widgets for each sensor data
         self.accel_label = QLabel("Accelerometer: N/A")
-        self.layout.addWidget(self.accel_label)
+        self.accel_label.setStyleSheet("border: 1px solid black; padding: 10px;")
+        self.sensor_data_layout.addWidget(self.accel_label)
 
         self.gyro_label = QLabel("Gyroscope: N/A")
-        self.layout.addWidget(self.gyro_label)
+        self.gyro_label.setStyleSheet("border: 1px solid black; padding: 10px;")
+        self.sensor_data_layout.addWidget(self.gyro_label)
 
         self.spo2_label = QLabel("SpO2: N/A%")
-        self.layout.addWidget(self.spo2_label)
+        self.spo2_label.setStyleSheet("border: 1px solid black; padding: 10px;")
+        self.sensor_data_layout.addWidget(self.spo2_label)
 
         self.heart_rate_label = QLabel("Heart Rate: N/A BPM")
-        self.layout.addWidget(self.heart_rate_label)
+        self.heart_rate_label.setStyleSheet("border: 1px solid black; padding: 10px;")
+        self.sensor_data_layout.addWidget(self.heart_rate_label)
 
         self.temp_label = QLabel("Temperature: N/A °C")
-        self.layout.addWidget(self.temp_label)
+        self.temp_label.setStyleSheet("border: 1px solid black; padding: 10px;")
+        self.sensor_data_layout.addWidget(self.temp_label)
 
         self.hearttemp_label = QLabel("Heart Temperature: N/A °C")
-        self.layout.addWidget(self.hearttemp_label)
+        self.hearttemp_label.setStyleSheet("border: 1px solid black; padding: 10px;")
+        self.sensor_data_layout.addWidget(self.hearttemp_label)
 
+        # Add the sensor data layout to the main layout
+        self.layout.addLayout(self.sensor_data_layout)
+
+        # Alarm label
         self.alarm_label = QLabel("No Alarms")
         self.layout.addWidget(self.alarm_label)
 
@@ -439,6 +485,8 @@ class MainProgram(QMainWindow):
         self.line_temp, = self.ax_temp.plot([], [], lw=2, label="Body Temperature", color=self.data_manager.graph_colors["temp"])
         self.line_hearttemp, = self.ax_temp.plot([], [], lw=2, label="Heart Temperature", color=self.data_manager.graph_colors["hearttemp"])
         self.ax_temp.legend()
+        self.ax_temp.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))  # Format x-axis as time
+        self.ax_temp.xaxis.set_major_locator(mdates.SecondLocator(interval=1))  # Set interval for time display
         self.canvas_temp = FigureCanvas(self.fig_temp)
         self.layout.addWidget(self.canvas_temp)
 
@@ -450,6 +498,8 @@ class MainProgram(QMainWindow):
         self.line_hr, = self.ax_hr.plot([], [], lw=2, label="Heart Rate (BPM)", color=self.data_manager.graph_colors["hr"])
         self.line_spo2, = self.ax_hr.plot([], [], lw=2, label="SpO2 (%)", color=self.data_manager.graph_colors["spo2"])
         self.ax_hr.legend()
+        self.ax_hr.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))  # Format x-axis as time
+        self.ax_hr.xaxis.set_major_locator(mdates.SecondLocator(interval=1))  # Set interval for time display
         self.canvas_hr = FigureCanvas(self.fig_hr)
         self.layout.addWidget(self.canvas_hr)
 
@@ -581,6 +631,7 @@ class MainProgram(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon('app_icon.png'))
+    app.setStyle('Fusion')
 
     data_manager = SensorDataManager()
     intro_window = IntroWindow(data_manager)

@@ -13,6 +13,8 @@ from datetime import datetime
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from mpl_toolkits.mplot3d import Axes3D
+import numpy as np
 import winsound
 import os
 import threading
@@ -473,6 +475,15 @@ class MainProgram(QMainWindow):
         # Add the sensor data layout to the main layout
         self.layout.addLayout(self.sensor_data_layout)
 
+        # Add calibration buttons
+        self.calibrate_accel_button = QPushButton("Calibrate Accelerometer")
+        self.calibrate_accel_button.clicked.connect(self.calibrate_accelerometer)
+        self.layout.addWidget(self.calibrate_accel_button)
+
+        self.calibrate_gyro_button = QPushButton("Calibrate Gyroscope")
+        self.calibrate_gyro_button.clicked.connect(self.calibrate_gyroscope)
+        self.layout.addWidget(self.calibrate_gyro_button)
+        
         # Alarm label
         self.alarm_label = QLabel("No Alarms")
         self.layout.addWidget(self.alarm_label)
@@ -514,11 +525,60 @@ class MainProgram(QMainWindow):
         self.return_button = QPushButton("Return to Intro")
         self.return_button.clicked.connect(self.return_to_intro)
         self.layout.addWidget(self.return_button)
+        
+        # Add a 3D graph for gyroscope data
+        self.fig_3d = plt.figure(figsize=(6, 4))
+        self.ax_3d = self.fig_3d.add_subplot(111, projection='3d')
+        self.ax_3d.set_title("Real-Time Gyroscope Data", fontsize=12)
+        self.ax_3d.set_xlabel("X")
+        self.ax_3d.set_ylabel("Y")
+        self.ax_3d.set_zlabel("Z")
+
+        # Initialize arrows for x, y, z axes
+        self.arrow_x = self.ax_3d.quiver(0, 0, 0, 1, 0, 0, color='r', label='X')
+        self.arrow_y = self.ax_3d.quiver(0, 0, 0, 0, 1, 0, color='g', label='Y')
+        self.arrow_z = self.ax_3d.quiver(0, 0, 0, 0, 0, 1, color='b', label='Z')
+
+        self.ax_3d.legend()
+        self.canvas_3d = FigureCanvas(self.fig_3d)
+        self.layout.addWidget(self.canvas_3d)
+
 
         # Start updating the GUI and graphs
         self.update_gui()
         self.update_graphs()
+        self.update_3d_graph()  # Start updating the 3D graph
+        
+        # Initialize calibration variables
+        self.accel_bias = {"x": 0.0, "y": 0.0, "z": 0.0}
+        self.gyro_bias = {"x": 0.0, "y": 0.0, "z": 0.0}
 
+    def update_3d_graph(self):
+        """Update the 3D graph with real-time gyroscope data."""
+        if self.data_manager.gyro_data != "N/A":
+            try:
+                # Parse gyroscope data (assuming format "X: x_val, Y: y_val, Z: z_val")
+                gyro_data = self.data_manager.gyro_data
+                x_val = float(gyro_data.split("X: ")[1].split(",")[0])
+                y_val = float(gyro_data.split("Y: ")[1].split(",")[0])
+                z_val = float(gyro_data.split("Z: ")[1].split(",")[0])
+
+                # Update the arrows for x, y, z axes
+                self.arrow_x.remove()
+                self.arrow_y.remove()
+                self.arrow_z.remove()
+                self.arrow_x = self.ax_3d.quiver(0, 0, 0, x_val, 0, 0, color='r', label='X')
+                self.arrow_y = self.ax_3d.quiver(0, 0, 0, 0, y_val, 0, color='g', label='Y')
+                self.arrow_z = self.ax_3d.quiver(0, 0, 0, 0, 0, z_val, color='b', label='Z')
+
+                # Redraw the 3D graph
+                self.canvas_3d.draw()
+            except Exception as e:
+                print(f"Error updating 3D graph: {e}")
+
+        # Schedule the next update (every 100ms)
+        QTimer.singleShot(100, self.update_3d_graph)
+        
     def open_customise_window(self):
         """Open the CustomiseWindow from the MainProgram."""
         self.customise_window = CustomiseWindow(self, self.data_manager)  # Pass `self` as parent
@@ -545,9 +605,81 @@ class MainProgram(QMainWindow):
             # Save settings if the user clicks "Save and Return"
             self.data_manager.alarm_thresholds["spo2"] = self.settings_window.spo2_threshold.value()
             
+    def calibrate_accelerometer(self):
+        """Calibrate the accelerometer by collecting data while stationary."""
+        QMessageBox.information(self, "Calibration", "Please keep the device stationary for accelerometer calibration.")
+        num_samples = 100
+        accel_x_sum = 0.0
+        accel_y_sum = 0.0
+        accel_z_sum = 0.0
+
+        for _ in range(num_samples):
+            if self.data_manager.accel_data != "N/A":
+                try:
+                    x, y, z = self.data_manager.accel_data.split("X: ")[1].split(",")
+                    accel_x_sum += float(x)
+                    accel_y_sum += float(y.split("Y: ")[1])
+                    accel_z_sum += float(z.split("Z: ")[1])
+                except Exception as e:
+                    print(f"Error parsing accelerometer data: {e}")
+            QTimer.singleShot(10, lambda: None)  # Wait for 10ms between samples
+            QApplication.processEvents()  # Allow the GUI to update
+
+        self.accel_bias["x"] = accel_x_sum / num_samples
+        self.accel_bias["y"] = accel_y_sum / num_samples
+        self.accel_bias["z"] = accel_z_sum / num_samples - 1.0  # Assuming Z axis is facing up (1g)
+
+        QMessageBox.information(self, "Calibration Complete", f"Accelerometer calibration complete.\nBias: X={self.accel_bias['x']}, Y={self.accel_bias['y']}, Z={self.accel_bias['z']}")
+
+    def calibrate_gyroscope(self):
+        """Calibrate the gyroscope by collecting data while stationary."""
+        QMessageBox.information(self, "Calibration", "Please keep the device stationary for gyroscope calibration.")
+        num_samples = 100
+        gyro_x_sum = 0.0
+        gyro_y_sum = 0.0
+        gyro_z_sum = 0.0
+
+        for _ in range(num_samples):
+            if self.data_manager.gyro_data != "N/A":
+                try:
+                    x, y, z = self.data_manager.gyro_data.split("X: ")[1].split(",")
+                    gyro_x_sum += float(x)
+                    gyro_y_sum += float(y.split("Y: ")[1])
+                    gyro_z_sum += float(z.split("Z: ")[1])
+                except Exception as e:
+                    print(f"Error parsing gyroscope data: {e}")
+            QTimer.singleShot(10, lambda: None)  # Wait for 10ms between samples
+            QApplication.processEvents()  # Allow the GUI to update
+
+        self.gyro_bias["x"] = gyro_x_sum / num_samples
+        self.gyro_bias["y"] = gyro_y_sum / num_samples
+        self.gyro_bias["z"] = gyro_z_sum / num_samples
+
+        QMessageBox.information(self, "Calibration Complete", f"Gyroscope calibration complete.\nBias: X={self.gyro_bias['x']}, Y={self.gyro_bias['y']}, Z={self.gyro_bias['z']}")
+
     def update_gui(self):
-        self.accel_label.setText(f"Accelerometer: {self.data_manager.accel_data}")
-        self.gyro_label.setText(f"Gyroscope: {self.data_manager.gyro_data}")
+        """Update the GUI with calibrated sensor data."""
+        if self.data_manager.accel_data != "N/A":
+            try:
+                x, y, z = self.data_manager.accel_data.split("X: ")[1].split(",")
+                x_calibrated = float(x) - self.accel_bias["x"]
+                y_calibrated = float(y.split("Y: ")[1]) - self.accel_bias["y"]
+                z_calibrated = float(z.split("Z: ")[1]) - self.accel_bias["z"]
+                self.accel_label.setText(f"Accelerometer: X: {x_calibrated:.4f}, Y: {y_calibrated:.4f}, Z: {z_calibrated:.4f}")
+            except Exception as e:
+                print(f"Error updating accelerometer data: {e}")
+
+        if self.data_manager.gyro_data != "N/A":
+            try:
+                x, y, z = self.data_manager.gyro_data.split("X: ")[1].split(",")
+                x_calibrated = float(x) - self.gyro_bias["x"]
+                y_calibrated = float(y.split("Y: ")[1]) - self.gyro_bias["y"]
+                z_calibrated = float(z.split("Z: ")[1]) - self.gyro_bias["z"]
+                self.gyro_label.setText(f"Gyroscope: X: {x_calibrated:.4f}, Y: {y_calibrated:.4f}, Z: {z_calibrated:.4f}")
+            except Exception as e:
+                print(f"Error updating gyroscope data: {e}")
+
+        # Update other sensor data
         self.spo2_label.setText(f"SpO2: {self.data_manager.spo2_data}%")
         self.heart_rate_label.setText(f"Heart Rate: {self.data_manager.heart_rate_data} BPM")
         self.temp_label.setText(f"Temperature: {self.data_manager.temp_data} °C")

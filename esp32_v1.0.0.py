@@ -4,9 +4,9 @@ import sys
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QLabel, QPushButton, QVBoxLayout, QWidget, QListWidget,
     QMessageBox, QCheckBox, QColorDialog, QFileDialog, QDialog, QSpinBox, QLineEdit,
-    QHBoxLayout, QGridLayout, QTextEdit, QGraphicsView, QGraphicsScene
+    QHBoxLayout, QGridLayout, QTextEdit, QGraphicsView, QGraphicsScene, QProgressDialog
 )
-from PyQt5.QtCore import Qt, QTimer, QDateTime
+from PyQt5.QtCore import Qt, QTimer, QEvent, QDateTime
 from PyQt5.QtGui import QPixmap, QFont, QImage, QIcon
 import csv
 from datetime import datetime
@@ -18,7 +18,9 @@ import numpy as np
 import winsound
 import os
 import threading
+import json
 from qasync import QEventLoop, asyncSlot, asyncClose
+from threading import Lock
 
 # Defined UUIDs (matching those in the ESP32 code)
 SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
@@ -28,18 +30,22 @@ SPO2_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26aa"
 HEART_RATE_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26ab"
 TEMP_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26ac"
 HEARTTEMP_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26af"  # UUID for heart temperature (internal temperature)
+PEDOMETER_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26b0"  # New UUID for pedometer
+
 
 # ESP32 MAC Address (for testing purposes only)
 # ESP32_ADDRESS = "10:06:1c:17:65:7e"
 
 class SensorDataManager:
     def __init__(self):
+        self.lock = Lock()  # Thread-safe lock for sensor data updates
         self.accel_data = "N/A"
         self.gyro_data = "N/A"
         self.spo2_data = "N/A"
         self.heart_rate_data = "N/A"
         self.temp_data = "N/A"
-        self.hearttemp_data = "N/A" 
+        self.hearttemp_data = "N/A"
+        self.pedometer_data = "N/A" 
 
         self.visible_sensors = {
             "accel": True,
@@ -47,7 +53,8 @@ class SensorDataManager:
             "spo2": True,
             "heart_rate": True,
             "temp": True,
-            "hearttemp": True
+            "hearttemp": True,
+            "pedometer": True  # New pedometer visibility
         }
 
         self.graph_colors = {
@@ -70,6 +77,25 @@ class SensorDataManager:
         self.last_log_time = None
         self.graph_data_points = 10  # Default number of data points to display
 
+        # Load calibration biases from file (if exists)
+        self.load_calibration()
+
+    def load_calibration(self):
+        """Load calibration biases from a file."""
+        try:
+            with open("calibration.json", "r") as f:
+                calibration = json.load(f)
+                self.accel_bias = calibration["accel_bias"]
+                self.gyro_bias = calibration["gyro_bias"]
+        except FileNotFoundError:
+            print("No calibration file found. Starting with default biases.")
+            self.accel_bias = {"x": 0.0, "y": 0.0, "z": 0.0}
+            self.gyro_bias = {"x": 0.0, "y": 0.0, "z": 0.0}
+
+    def save_calibration(self):
+        """Save calibration biases to a file."""
+        with open("calibration.json", "w") as f:
+            json.dump({"accel_bias": self.accel_bias, "gyro_bias": self.gyro_bias}, f)
 
     def log_data(self, timestamp, accel, gyro, spo2, heart_rate, temp, hearttemp):
         """Log sensor data to a CSV file once per second."""
@@ -80,37 +106,42 @@ class SensorDataManager:
             self.last_log_time = datetime.now()
 
     def play_sound(self, filename):
-        if os.path.exists(filename):
-            if os.name == "nt":  # Windows
+        """Play a sound if available, otherwise do nothing silently."""
+        try:
+            if os.path.exists(filename) and os.name == "nt":  # Windows
                 winsound.PlaySound(filename, winsound.SND_ASYNC)
-            else:  # macOS/Linux
+            elif os.path.exists(filename):  # macOS/Linux
                 os.system(f"afplay {filename} &")
-        else:
-            print(f"Warning: Sound file '{filename}' not found.")
+        except Exception as e:
+            print(f"Sound playback error: {e}")
 
     def update_sensor_data(self, sensor_type, data):
         value = data.decode("utf-8")
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if sensor_type == "accel":
-            x, y, z = value.split(',')
-            self.accel_data = f"X: {x}, Y: {y}, Z: {z}"
-            self.log_data(timestamp, value, self.gyro_data, self.spo2_data, self.heart_rate_data, self.temp_data, self.hearttemp_data)
-        elif sensor_type == "gyro":
-            x, y, z = value.split(',')
-            self.gyro_data = f"X: {x}, Y: {y}, Z: {z}"
-            self.log_data(timestamp, self.accel_data, value, self.spo2_data, self.heart_rate_data, self.temp_data, self.hearttemp_data)
-        elif sensor_type == "spo2":
-            self.spo2_data = value
-            self.log_data(timestamp, self.accel_data, self.gyro_data, value, self.heart_rate_data, self.temp_data, self.hearttemp_data)
-        elif sensor_type == "heart_rate":
-            self.heart_rate_data = value
-            self.log_data(timestamp, self.accel_data, self.gyro_data, self.spo2_data, value, self.temp_data, self.hearttemp_data)
-        elif sensor_type == "temp":
-            self.temp_data = value
-            self.log_data(timestamp, self.accel_data, self.gyro_data, self.spo2_data, self.heart_rate_data, value, self.hearttemp_data)
-        elif sensor_type == "hearttemp":  # Handle heart temperature data
-            self.hearttemp_data = value
-            self.log_data(timestamp, self.accel_data, self.gyro_data, self.spo2_data, self.heart_rate_data, self.temp_data, value)
+        with self.lock:  # Thread-safe update
+            if sensor_type == "accel":
+                x, y, z = value.split(',')
+                self.accel_data = f"X: {x}, Y: {y}, Z: {z}"
+                self.log_data(timestamp, value, self.gyro_data, self.spo2_data, self.heart_rate_data, self.temp_data, self.hearttemp_data)
+            elif sensor_type == "gyro":
+                x, y, z = value.split(',')
+                self.gyro_data = f"X: {x}, Y: {y}, Z: {z}"
+                self.log_data(timestamp, self.accel_data, value, self.spo2_data, self.heart_rate_data, self.temp_data, self.hearttemp_data)
+            elif sensor_type == "spo2":
+                self.spo2_data = value
+                self.log_data(timestamp, self.accel_data, self.gyro_data, value, self.heart_rate_data, self.temp_data, self.hearttemp_data)
+            elif sensor_type == "heart_rate":
+                self.heart_rate_data = value
+                self.log_data(timestamp, self.accel_data, self.gyro_data, self.spo2_data, value, self.temp_data, self.hearttemp_data)
+            elif sensor_type == "temp":
+                self.temp_data = value
+                self.log_data(timestamp, self.accel_data, self.gyro_data, self.spo2_data, self.heart_rate_data, value, self.hearttemp_data)
+            elif sensor_type == "hearttemp":  # Handle heart temperature data
+                self.hearttemp_data = value
+                self.log_data(timestamp, self.accel_data, self.gyro_data, self.spo2_data, self.heart_rate_data, self.temp_data, value)
+            elif sensor_type == "pedometer":  # Handle pedometer data
+                self.pedometer_data = value
+                self.log_data(timestamp, self.accel_data, self.gyro_data, self.spo2_data, self.heart_rate_data, self.temp_data, self.hearttemp_data)
 
 # Settings Window
 class SettingsWindow(QDialog):
@@ -118,6 +149,7 @@ class SettingsWindow(QDialog):
         super().__init__(parent)
         self.data_manager = data_manager
         self.setWindowTitle("Settings")
+        self.setWindowFlags(self.windowFlags() | Qt.WindowContextHelpButtonHint)  # Add the question mark button
         self.setStyleSheet("background: #0B2E33; color: #93B1B5;")
 
         layout = QVBoxLayout()
@@ -170,6 +202,17 @@ class SettingsWindow(QDialog):
             f.write("")
         QMessageBox.information(self, "Success", "Data cleared successfully")
 
+    def event(self, event):
+        """Override the event method to handle the question mark button click."""
+        if event.type() == QEvent.EnterWhatsThisMode:
+            self.show_settingshelp()
+            return True
+        return super().event(event)
+
+    def show_settingshelp(self):
+        """Display a help message for the window."""
+        QMessageBox.information(self, "Help", "This is the Settings window. Use this window to configure alarm thresholds, clear data, and change the data directory.")
+        
     def accept(self):
         self.data_manager.alarm_thresholds["spo2"] = self.spo2_threshold.value()
         super().accept()
@@ -180,6 +223,7 @@ class CustomiseWindow(QDialog):
         super().__init__(parent)
         self.data_manager = data_manager
         self.setWindowTitle("Customise")
+        self.setWindowFlags(self.windowFlags() | Qt.WindowContextHelpButtonHint)  # Add the question mark button
         self.setStyleSheet("background: #0B2E33; color: #93B1B5;")
 
         layout = QVBoxLayout()
@@ -189,12 +233,14 @@ class CustomiseWindow(QDialog):
         # Checkboxes in a 3x2 grid
         self.grid_layout = QGridLayout()
         self.grid_layout.setSpacing(10)
+        self.checkboxes = {}  # Dictionary to store checkboxes
         sensors = list(self.data_manager.visible_sensors.keys())
         for i, sensor in enumerate(sensors):
             row = i // 2
             col = i % 2
             cb = QCheckBox(sensor.replace("_", " ").title())
             cb.setChecked(self.data_manager.visible_sensors[sensor])
+            self.checkboxes[sensor] = cb  # Store the checkbox in the dictionary
             self.grid_layout.addWidget(cb, row, col)
         layout.addLayout(self.grid_layout)
 
@@ -238,6 +284,17 @@ class CustomiseWindow(QDialog):
         if color.isValid():
             self.data_manager.graph_colors[graph] = color.name()
             self.sender().setStyleSheet(f"background-color: {color.name()}")
+            
+    def event(self, event):
+        """Override the event method to handle the question mark button click."""
+        if event.type() == QEvent.EnterWhatsThisMode:
+            self.show_customhelp()
+            return True
+        return super().event(event)
+
+    def show_customhelp(self):
+        """Display a help message for the window."""
+        QMessageBox.information(self, "Help", "This is the Customise window. Use this window to toggle sensor visibility, change graph colors, and adjust the number of data points displayed.")
 
 # Introductory Window
 class IntroWindow(QMainWindow):
@@ -246,7 +303,7 @@ class IntroWindow(QMainWindow):
         self.data_manager = data_manager
         self.setWindowTitle("Health Monitoring System")
         self.setGeometry(100, 100, 500, 400)
-        self.setStyleSheet("background: #0B2E33; color: #93B1B5;")
+        self.setStyleSheet("background: #082124; color: #CBE896;")
 
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
@@ -310,11 +367,22 @@ class IntroWindow(QMainWindow):
     def open_connect_window(self):
         """Open the Connect window to scan and pair with BLE devices."""
         self.connect_window = QDialog(self)
-        self.connect_window.setWindowTitle("Connect")
+        self.connect_window.setWindowTitle("Connect to Device")
         self.connect_window.setGeometry(200, 200, 400, 300)
 
         self.connect_layout = QVBoxLayout(self.connect_window)
+        self.connect_layout.setSpacing(15)
 
+        # Instructions
+        instructions = QLabel(
+            "1. Click 'Scan for Devices'\n"
+            "2. Select your device from the list\n"
+            "3. Click 'Connect'\n\n"
+            "Ensure your device is powered on and in range."
+        )
+        instructions.setWordWrap(True)
+        self.connect_layout.addWidget(instructions)
+        
         # Scan button
         self.scan_button = QPushButton("Scan for Devices")
         self.scan_button.clicked.connect(self.scan_ble_devices)
@@ -372,6 +440,7 @@ class IntroWindow(QMainWindow):
                     await client.start_notify(HEART_RATE_UUID, lambda _, data: self.data_manager.update_sensor_data("heart_rate", data))
                     await client.start_notify(TEMP_UUID, lambda _, data: self.data_manager.update_sensor_data("temp", data))
                     await client.start_notify(HEARTTEMP_UUID, lambda _, data: self.data_manager.update_sensor_data("hearttemp", data))  # Heart temperature notifications
+                    await client.start_notify(PEDOMETER_UUID, lambda _, data: self.data_manager.update_sensor_data("pedometer", data))  # Enable pedometer notifications
 
                     print("Notifications enabled. Waiting for updates...")
                     while self.data_manager.running:
@@ -410,7 +479,7 @@ class IntroWindow(QMainWindow):
             # Save settings
             for sensor, cb in self.customise_window.checkboxes.items():
                 self.data_manager.visible_sensors[sensor] = cb.isChecked()
-
+ 
     def start_program(self):
         """Start the main program."""
         if not self.data_manager.ble_connected:
@@ -427,6 +496,7 @@ class MainProgram(QMainWindow):
         super().__init__()
         self.data_manager = data_manager
         self.setWindowTitle("ESP32 Sensor Monitor")
+        self.setWindowFlags(self.windowFlags() | Qt.WindowContextHelpButtonHint)  # Add the question mark button
         self.setGeometry(100, 100, 1000, 800)
 
         self.central_widget = QWidget()
@@ -434,6 +504,10 @@ class MainProgram(QMainWindow):
 
         self.layout = QVBoxLayout(self.central_widget)
 
+        # Initialize calibration variables from data_manager
+        self.accel_bias = self.data_manager.accel_bias
+        self.gyro_bias = self.data_manager.gyro_bias
+        
         # Button to access the SettingsWindow
         self.settings_button = QPushButton("Open Settings")
         self.settings_button.clicked.connect(self.open_settings_window)
@@ -446,43 +520,61 @@ class MainProgram(QMainWindow):
 
         # Create a horizontal layout for the sensor data boxes
         self.sensor_data_layout = QHBoxLayout()
+        self.sensor_data_layoutB = QHBoxLayout()
 
         # Create QLabel widgets for each sensor data
         self.accel_label = QLabel("Accelerometer: N/A")
         self.accel_label.setStyleSheet("border: 1px solid black; padding: 10px;")
+        self.accel_label.setAlignment(Qt.AlignCenter)
         self.sensor_data_layout.addWidget(self.accel_label)
 
         self.gyro_label = QLabel("Gyroscope: N/A")
         self.gyro_label.setStyleSheet("border: 1px solid black; padding: 10px;")
+        self.gyro_label.setAlignment(Qt.AlignCenter)
         self.sensor_data_layout.addWidget(self.gyro_label)
-
-        self.spo2_label = QLabel("SpO2: N/A%")
-        self.spo2_label.setStyleSheet("border: 1px solid black; padding: 10px;")
-        self.sensor_data_layout.addWidget(self.spo2_label)
-
+        
         self.heart_rate_label = QLabel("Heart Rate: N/A BPM")
         self.heart_rate_label.setStyleSheet("border: 1px solid black; padding: 10px;")
-        self.sensor_data_layout.addWidget(self.heart_rate_label)
+        self.heart_rate_label.setAlignment(Qt.AlignCenter)
+        self.sensor_data_layoutB.addWidget(self.heart_rate_label)
+        
+        self.spo2_label = QLabel("SpO2: N/A%")
+        self.spo2_label.setStyleSheet("border: 1px solid black; padding: 10px;")
+        self.spo2_label.setAlignment(Qt.AlignCenter)
+        self.sensor_data_layoutB.addWidget(self.spo2_label)
 
         self.temp_label = QLabel("Temperature: N/A °C")
         self.temp_label.setStyleSheet("border: 1px solid black; padding: 10px;")
-        self.sensor_data_layout.addWidget(self.temp_label)
+        self.temp_label.setAlignment(Qt.AlignCenter)
+        self.sensor_data_layoutB.addWidget(self.temp_label)
 
         self.hearttemp_label = QLabel("Heart Temperature: N/A °C")
         self.hearttemp_label.setStyleSheet("border: 1px solid black; padding: 10px;")
-        self.sensor_data_layout.addWidget(self.hearttemp_label)
+        self.hearttemp_label.setAlignment(Qt.AlignCenter)
+        self.sensor_data_layoutB.addWidget(self.hearttemp_label)
 
+        self.pedometer_label = QLabel("Steps Taken: N/A")  # New pedometer label
+        self.pedometer_label.setStyleSheet("border: 1px solid black; padding: 10px;")
+        self.pedometer_label.setAlignment(Qt.AlignCenter)
+        self.sensor_data_layout.addWidget(self.pedometer_label)
+        
         # Add the sensor data layout to the main layout
         self.layout.addLayout(self.sensor_data_layout)
+        self.layout.addLayout(self.sensor_data_layoutB)
 
+        # Create a horizontal layout for the calibration buttons
+        self.calib_layout = QHBoxLayout()
+        
         # Add calibration buttons
         self.calibrate_accel_button = QPushButton("Calibrate Accelerometer")
         self.calibrate_accel_button.clicked.connect(self.calibrate_accelerometer)
-        self.layout.addWidget(self.calibrate_accel_button)
+        self.calib_layout.addWidget(self.calibrate_accel_button)
 
         self.calibrate_gyro_button = QPushButton("Calibrate Gyroscope")
         self.calibrate_gyro_button.clicked.connect(self.calibrate_gyroscope)
-        self.layout.addWidget(self.calibrate_gyro_button)
+        self.calib_layout.addWidget(self.calibrate_gyro_button)
+        
+        self.layout.addLayout(self.calib_layout)
         
         # Alarm label
         self.alarm_label = QLabel("No Alarms")
@@ -520,11 +612,6 @@ class MainProgram(QMainWindow):
         self.hearttemp_values = []
         self.hr_values = []
         self.spo2_values = []
-
-        # Return to Intro button
-        self.return_button = QPushButton("Return to Intro")
-        self.return_button.clicked.connect(self.return_to_intro)
-        self.layout.addWidget(self.return_button)
         
         # Add a 3D graph for gyroscope data
         self.fig_3d = plt.figure(figsize=(6, 4))
@@ -542,16 +629,21 @@ class MainProgram(QMainWindow):
         self.ax_3d.legend()
         self.canvas_3d = FigureCanvas(self.fig_3d)
         self.layout.addWidget(self.canvas_3d)
-
-
+        
+        # Add a button to open the pop-out window
+        self.pop_out_button = QPushButton("Open Pop-Out Window")
+        self.pop_out_button.clicked.connect(self.open_pop_out_window)
+        self.layout.addWidget(self.pop_out_button)
+        
+        # Return to Intro button
+        self.return_button = QPushButton("Return to Intro")
+        self.return_button.clicked.connect(self.return_to_intro)
+        self.layout.addWidget(self.return_button)
+        
         # Start updating the GUI and graphs
         self.update_gui()
         self.update_graphs()
         self.update_3d_graph()  # Start updating the 3D graph
-        
-        # Initialize calibration variables
-        self.accel_bias = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.gyro_bias = {"x": 0.0, "y": 0.0, "z": 0.0}
 
     def update_3d_graph(self):
         """Update the 3D graph with real-time gyroscope data."""
@@ -629,6 +721,10 @@ class MainProgram(QMainWindow):
         self.accel_bias["y"] = accel_y_sum / num_samples
         self.accel_bias["z"] = accel_z_sum / num_samples - 1.0  # Assuming Z axis is facing up (1g)
 
+        # Update data_manager biases
+        self.data_manager.accel_bias = self.accel_bias
+        self.data_manager.save_calibration()
+    
         QMessageBox.information(self, "Calibration Complete", f"Accelerometer calibration complete.\nBias: X={self.accel_bias['x']}, Y={self.accel_bias['y']}, Z={self.accel_bias['z']}")
 
     def calibrate_gyroscope(self):
@@ -655,6 +751,10 @@ class MainProgram(QMainWindow):
         self.gyro_bias["y"] = gyro_y_sum / num_samples
         self.gyro_bias["z"] = gyro_z_sum / num_samples
 
+        # Update data_manager biases
+        self.data_manager.gyro_bias = self.gyro_bias
+        self.data_manager.save_calibration()
+    
         QMessageBox.information(self, "Calibration Complete", f"Gyroscope calibration complete.\nBias: X={self.gyro_bias['x']}, Y={self.gyro_bias['y']}, Z={self.gyro_bias['z']}")
 
     def update_gui(self):
@@ -684,6 +784,7 @@ class MainProgram(QMainWindow):
         self.heart_rate_label.setText(f"Heart Rate: {self.data_manager.heart_rate_data} BPM")
         self.temp_label.setText(f"Temperature: {self.data_manager.temp_data} °C")
         self.hearttemp_label.setText(f"Heart Temperature: {self.data_manager.hearttemp_data} °C")
+        self.pedometer_label.setText(f"Steps Taken: {self.data_manager.pedometer_data}")  # Update pedometer data
 
         try:
             spo2 = float(self.data_manager.spo2_data) if self.data_manager.spo2_data != "N/A" else 0
@@ -692,15 +793,18 @@ class MainProgram(QMainWindow):
             alarms = []
             if spo2 < self.data_manager.alarm_thresholds["spo2"]:
                 alarms.append("Low SpO2")
-                self.data_manager.play_sound("alarm.wav")
             if hr < self.data_manager.alarm_thresholds["heart_rate_low"]:
                 alarms.append("Low Heart Rate")
-                self.data_manager.play_sound("alarm.wav")
             if hr > self.data_manager.alarm_thresholds["heart_rate_high"]:
                 alarms.append("High Heart Rate")
-                self.data_manager.play_sound("alarm.wav")
 
             self.alarm_label.setText("ALERTS: " + ", ".join(alarms) if alarms else "No Alarms")
+            self.alarm_label.setAlignment(Qt.AlignCenter)
+
+            if alarms:
+                self.alarm_label.setStyleSheet("color: red; font-weight: bold;")
+            else:
+                self.alarm_label.setStyleSheet("")
         except ValueError:
             pass
 
@@ -730,13 +834,38 @@ class MainProgram(QMainWindow):
             self.line_hearttemp.set_data(self.timestamps, self.hearttemp_values)
             self.ax_temp.relim()
             self.ax_temp.autoscale_view()
-            self.canvas_temp.draw()
 
             # Update the heart rate and SpO2 graph
             self.line_hr.set_data(self.timestamps, self.hr_values)
             self.line_spo2.set_data(self.timestamps, self.spo2_values)
             self.ax_hr.relim()
             self.ax_hr.autoscale_view()
+
+            # Adjust x-axis limits to fit the number of data points
+            if len(self.timestamps) > 1:
+                time_range = (self.timestamps[-1] - self.timestamps[0]).total_seconds()
+                self.ax_temp.set_xlim(self.timestamps[0], self.timestamps[-1])
+                self.ax_hr.set_xlim(self.timestamps[0], self.timestamps[-1])
+
+                # Adjust x-axis tick formatting based on the time range
+                if time_range <= 60:  # Less than or equal to 1 minute
+                    self.ax_temp.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+                    self.ax_hr.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+                    self.ax_temp.xaxis.set_major_locator(mdates.SecondLocator(interval=5))  # Show every 5 seconds
+                    self.ax_hr.xaxis.set_major_locator(mdates.SecondLocator(interval=5))
+                elif time_range <= 3600:  # Less than or equal to 1 hour
+                    self.ax_temp.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+                    self.ax_hr.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+                    self.ax_temp.xaxis.set_major_locator(mdates.MinuteLocator(interval=1))  # Show every minute
+                    self.ax_hr.xaxis.set_major_locator(mdates.MinuteLocator(interval=1))
+                else:  # More than 1 hour
+                    self.ax_temp.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+                    self.ax_hr.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+                    self.ax_temp.xaxis.set_major_locator(mdates.HourLocator(interval=1))  # Show every hour
+                    self.ax_hr.xaxis.set_major_locator(mdates.HourLocator(interval=1))
+
+            # Redraw the graphs
+            self.canvas_temp.draw()
             self.canvas_hr.draw()
 
             # Apply visibility settings
@@ -752,12 +881,143 @@ class MainProgram(QMainWindow):
             self.line_spo2.set_color(self.data_manager.graph_colors["spo2"])
 
         QTimer.singleShot(1000, self.update_graphs)
+    
+    def event(self, event):
+        """Override the event method to handle the question mark button click."""
+        if event.type() == QEvent.EnterWhatsThisMode:
+            self.show_mainhelp()
+            return True
+        return super().event(event)
 
+    def show_mainhelp(self):
+        """Display a help message for the window."""
+        QMessageBox.information(self, "Help", "This is the Main Program window. Use this window to view real-time sensor data, calibrate sensors, and monitor health metrics.")
+
+    def open_pop_out_window(self):
+        """Open the pop-out window."""
+        self.pop_out_window = PopOutWindow(self.data_manager, self)
+        self.pop_out_window.show()
+        
     def return_to_intro(self):
         """Return to the introductory window."""
         self.close()
         self.intro_window = IntroWindow(self.data_manager)
         self.intro_window.show()
+
+class PopOutWindow(QDialog):
+    def __init__(self, data_manager, parent=None):
+        super().__init__(parent)
+        self.data_manager = data_manager
+        self.setWindowTitle("Sensor Data Summary")
+        self.setGeometry(100, 100, 600, 400)  # Smaller size for the pop-out window
+
+        # Layout
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+
+        # Sensor data labels
+        self.accel_label = QLabel("Accelerometer: N/A")
+        self.gyro_label = QLabel("Gyroscope: N/A")
+        self.spo2_label = QLabel("SpO2: N/A%")
+        self.heart_rate_label = QLabel("Heart Rate: N/A BPM")
+        self.temp_label = QLabel("Temperature: N/A °C")
+        self.hearttemp_label = QLabel("Heart Temperature: N/A °C")
+
+        layout.addWidget(self.accel_label)
+        layout.addWidget(self.gyro_label)
+        layout.addWidget(self.spo2_label)
+        layout.addWidget(self.heart_rate_label)
+        layout.addWidget(self.temp_label)
+        layout.addWidget(self.hearttemp_label)
+
+        # Matplotlib graph for real-time temperature data
+        self.fig_temp, self.ax_temp = plt.subplots(figsize=(5, 3))
+        self.ax_temp.set_title("Real-Time Temperature Data")
+        self.ax_temp.set_xlabel("Time")
+        self.ax_temp.set_ylabel("Temperature (°C)")
+        self.line_temp, = self.ax_temp.plot([], [], lw=2, label="Body Temperature", color=self.data_manager.graph_colors["temp"])
+        self.line_hearttemp, = self.ax_temp.plot([], [], lw=2, label="Heart Temperature", color=self.data_manager.graph_colors["hearttemp"])
+        self.ax_temp.legend()
+        self.ax_temp.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+        self.ax_temp.xaxis.set_major_locator(mdates.SecondLocator(interval=1))
+        self.canvas_temp = FigureCanvas(self.fig_temp)
+        layout.addWidget(self.canvas_temp)
+
+        # Matplotlib graph for real-time heart rate and SpO2 data
+        self.fig_hr, self.ax_hr = plt.subplots(figsize=(5, 3))
+        self.ax_hr.set_title("Real-Time Heart Rate and SpO2")
+        self.ax_hr.set_xlabel("Time")
+        self.ax_hr.set_ylabel("Value")
+        self.line_hr, = self.ax_hr.plot([], [], lw=2, label="Heart Rate (BPM)", color=self.data_manager.graph_colors["hr"])
+        self.line_spo2, = self.ax_hr.plot([], [], lw=2, label="SpO2 (%)", color=self.data_manager.graph_colors["spo2"])
+        self.ax_hr.legend()
+        self.ax_hr.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+        self.ax_hr.xaxis.set_major_locator(mdates.SecondLocator(interval=1))
+        self.canvas_hr = FigureCanvas(self.fig_hr)
+        layout.addWidget(self.canvas_hr)
+
+        # Data for the graphs
+        self.timestamps = []
+        self.temp_values = []
+        self.hearttemp_values = []
+        self.hr_values = []
+        self.spo2_values = []
+
+        # Start updating the GUI and graphs
+        self.update_gui()
+        self.update_graphs()
+
+    def update_gui(self):
+        """Update the GUI with the latest sensor data."""
+        if self.data_manager.accel_data != "N/A":
+            self.accel_label.setText(f"Accelerometer: {self.data_manager.accel_data}")
+        if self.data_manager.gyro_data != "N/A":
+            self.gyro_label.setText(f"Gyroscope: {self.data_manager.gyro_data}")
+        if self.data_manager.spo2_data != "N/A":
+            self.spo2_label.setText(f"SpO2: {self.data_manager.spo2_data}%")
+        if self.data_manager.heart_rate_data != "N/A":
+            self.heart_rate_label.setText(f"Heart Rate: {self.data_manager.heart_rate_data} BPM")
+        if self.data_manager.temp_data != "N/A":
+            self.temp_label.setText(f"Temperature: {self.data_manager.temp_data} °C")
+        if self.data_manager.hearttemp_data != "N/A":
+            self.hearttemp_label.setText(f"Heart Temperature: {self.data_manager.hearttemp_data} °C")
+
+        QTimer.singleShot(100, self.update_gui)  # Schedule the next update
+
+    def update_graphs(self):
+        """Update the graphs with the latest data."""
+        if self.data_manager.temp_data != "N/A" and self.data_manager.hearttemp_data != "N/A" and self.data_manager.heart_rate_data != "N/A" and self.data_manager.spo2_data != "N/A":
+            timestamp = datetime.now()
+            self.timestamps.append(timestamp)
+            self.temp_values.append(float(self.data_manager.temp_data))
+            self.hearttemp_values.append(float(self.data_manager.hearttemp_data))
+            self.hr_values.append(float(self.data_manager.heart_rate_data))
+            self.spo2_values.append(float(self.data_manager.spo2_data))
+
+            # Limit to the last N data points
+            max_points = self.data_manager.graph_data_points
+            if len(self.timestamps) > max_points:
+                self.timestamps = self.timestamps[-max_points:]
+                self.temp_values = self.temp_values[-max_points:]
+                self.hearttemp_values = self.hearttemp_values[-max_points:]
+                self.hr_values = self.hr_values[-max_points:]
+                self.spo2_values = self.spo2_values[-max_points:]
+
+            # Update the temperature graph
+            self.line_temp.set_data(self.timestamps, self.temp_values)
+            self.line_hearttemp.set_data(self.timestamps, self.hearttemp_values)
+            self.ax_temp.relim()
+            self.ax_temp.autoscale_view()
+            self.canvas_temp.draw()
+
+            # Update the heart rate and SpO2 graph
+            self.line_hr.set_data(self.timestamps, self.hr_values)
+            self.line_spo2.set_data(self.timestamps, self.spo2_values)
+            self.ax_hr.relim()
+            self.ax_hr.autoscale_view()
+            self.canvas_hr.draw()
+
+        QTimer.singleShot(1000, self.update_graphs)  # Schedule the next update
 
 # Start the introductory window
 if __name__ == "__main__":

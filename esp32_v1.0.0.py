@@ -1,15 +1,16 @@
 import asyncio
+import math
 from bleak import BleakScanner, BleakClient
 import sys
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QLabel, QPushButton, QVBoxLayout, QWidget, QListWidget,
     QMessageBox, QCheckBox, QColorDialog, QFileDialog, QDialog, QSpinBox, QLineEdit,
-    QHBoxLayout, QGridLayout, QTextEdit, QGraphicsView, QGraphicsScene, QProgressDialog
+    QHBoxLayout, QGridLayout, QDialogButtonBox, QGroupBox, QScrollArea, QTextEdit, QGraphicsView, QGraphicsScene, QProgressDialog
 )
 from PyQt5.QtCore import Qt, QTimer, QEvent, QDateTime
 from PyQt5.QtGui import QPixmap, QFont, QImage, QIcon
 import csv
-from datetime import datetime
+from datetime import datetime, timedelta
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -76,10 +77,27 @@ class SensorDataManager:
         self.ble_connected = False
         self.last_log_time = None
         self.graph_data_points = 10  # Default number of data points to display
+        self.linear_accel = 0.0  # Store linear acceleration
 
         # Load calibration biases from file (if exists)
         self.load_calibration()
 
+    def calculate_linear_acceleration(self, x, y, z):
+        """Calculate the magnitude of linear acceleration (in m/s²)"""
+        # Remove gravity component (assuming z-axis is up)
+        x = float(x) - self.accel_bias["x"]
+        y = float(y) - self.accel_bias["y"]
+        z = float(z) - self.accel_bias["z"] - 1.0  # Subtract 1g (9.81 m/s²)
+        
+        # Convert to m/s² (assuming raw values are in g)
+        x *= 9.81
+        y *= 9.81
+        z *= 9.81
+        
+        # Calculate magnitude
+        self.linear_accel = math.sqrt(x**2 + y**2 + z**2)
+        return self.linear_accel
+    
     def load_calibration(self):
         """Load calibration biases from a file."""
         try:
@@ -122,6 +140,7 @@ class SensorDataManager:
             if sensor_type == "accel":
                 x, y, z = value.split(',')
                 self.accel_data = f"X: {x}, Y: {y}, Z: {z}"
+                self.calculate_linear_acceleration(x, y, z)  # Calculate linear acceleration
                 self.log_data(timestamp, value, self.gyro_data, self.spo2_data, self.heart_rate_data, self.temp_data, self.hearttemp_data)
             elif sensor_type == "gyro":
                 x, y, z = value.split(',')
@@ -496,7 +515,7 @@ class MainProgram(QMainWindow):
         super().__init__()
         self.data_manager = data_manager
         self.setWindowTitle("ESP32 Sensor Monitor")
-        self.setWindowFlags(self.windowFlags() | Qt.WindowContextHelpButtonHint)  # Add the question mark button
+        self.setWindowFlags(self.windowFlags() | Qt.WindowContextHelpButtonHint)
         self.setGeometry(100, 100, 1000, 800)
 
         self.central_widget = QWidget()
@@ -518,7 +537,7 @@ class MainProgram(QMainWindow):
         self.customise_button.clicked.connect(self.open_customise_window)
         self.layout.addWidget(self.customise_button)
 
-        # Create a horizontal layout for the sensor data boxes
+        # Create horizontal layouts for the sensor data boxes
         self.sensor_data_layout = QHBoxLayout()
         self.sensor_data_layoutB = QHBoxLayout()
 
@@ -553,12 +572,12 @@ class MainProgram(QMainWindow):
         self.hearttemp_label.setAlignment(Qt.AlignCenter)
         self.sensor_data_layoutB.addWidget(self.hearttemp_label)
 
-        self.pedometer_label = QLabel("Steps Taken: N/A")  # New pedometer label
+        self.pedometer_label = QLabel("Steps Taken: N/A")
         self.pedometer_label.setStyleSheet("border: 1px solid black; padding: 10px;")
         self.pedometer_label.setAlignment(Qt.AlignCenter)
         self.sensor_data_layout.addWidget(self.pedometer_label)
         
-        # Add the sensor data layout to the main layout
+        # Add the sensor data layouts to the main layout
         self.layout.addLayout(self.sensor_data_layout)
         self.layout.addLayout(self.sensor_data_layoutB)
 
@@ -580,31 +599,146 @@ class MainProgram(QMainWindow):
         self.alarm_label = QLabel("No Alarms")
         self.layout.addWidget(self.alarm_label)
 
-        # Matplotlib graph for real-time temperature data
-        self.fig_temp, self.ax_temp = plt.subplots(figsize=(6, 4))
-        self.ax_temp.set_title("Real-Time Temperature Data", fontsize=12)
+        # Temperature Graph
+        self.fig_temp = plt.figure(figsize=(8, 3))
+        self.ax_temp = self.fig_temp.add_subplot(111)
+        self.ax_temp.set_title("Temperature Monitoring", fontsize=12, fontweight='bold', pad=15)
         self.ax_temp.set_xlabel("Time", fontsize=10)
         self.ax_temp.set_ylabel("Temperature (°C)", fontsize=10)
-        self.line_temp, = self.ax_temp.plot([], [], lw=2, label="Body Temperature", color=self.data_manager.graph_colors["temp"])
-        self.line_hearttemp, = self.ax_temp.plot([], [], lw=2, label="Heart Temperature", color=self.data_manager.graph_colors["hearttemp"])
-        self.ax_temp.legend()
-        self.ax_temp.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))  # Format x-axis as time
-        self.ax_temp.xaxis.set_major_locator(mdates.SecondLocator(interval=1))  # Set interval for time display
+        self.line_temp, = self.ax_temp.plot([], [], 
+                                          lw=2, 
+                                          label="Body Temperature", 
+                                          color=self.data_manager.graph_colors["temp"],
+                                          marker='o',
+                                          markersize=4,
+                                          alpha=0.7)
+        self.line_hearttemp, = self.ax_temp.plot([], [], 
+                                               lw=2, 
+                                               label="Heart Temperature", 
+                                               color=self.data_manager.graph_colors["hearttemp"],
+                                               marker='s',
+                                               markersize=4,
+                                               alpha=0.7)
+        
+        # Enhance grid and ticks
+        self.ax_temp.grid(True, linestyle='--', alpha=0.6)
+        self.ax_temp.tick_params(axis='both', which='major', labelsize=9)
+        self.ax_temp.legend(loc='upper right', fontsize=9)
+        
+        # Format x-axis
+        self.ax_temp.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+        self.ax_temp.xaxis.set_major_locator(mdates.AutoDateLocator())
+        
+        # Add some padding
+        self.fig_temp.subplots_adjust(left=0.1, right=0.95, top=0.9, bottom=0.15)
+        
         self.canvas_temp = FigureCanvas(self.fig_temp)
         self.layout.addWidget(self.canvas_temp)
 
-        # Matplotlib graph for real-time heart rate and SpO2 data
-        self.fig_hr, self.ax_hr = plt.subplots(figsize=(6, 4))
-        self.ax_hr.set_title("Real-Time Heart Rate and SpO2", fontsize=12)
+        # Heart Rate & SpO2 Graph
+        self.fig_hr = plt.figure(figsize=(8, 3))
+        self.ax_hr = self.fig_hr.add_subplot(111)
+        self.ax_hr.set_title("Heart Rate & Oxygen Saturation", fontsize=12, fontweight='bold', pad=15)
         self.ax_hr.set_xlabel("Time", fontsize=10)
         self.ax_hr.set_ylabel("Value", fontsize=10)
-        self.line_hr, = self.ax_hr.plot([], [], lw=2, label="Heart Rate (BPM)", color=self.data_manager.graph_colors["hr"])
-        self.line_spo2, = self.ax_hr.plot([], [], lw=2, label="SpO2 (%)", color=self.data_manager.graph_colors["spo2"])
-        self.ax_hr.legend()
-        self.ax_hr.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))  # Format x-axis as time
-        self.ax_hr.xaxis.set_major_locator(mdates.SecondLocator(interval=1))  # Set interval for time display
+        
+        # Create two y-axes for different scales
+        self.ax_hr2 = self.ax_hr.twinx()
+        self.ax_hr2.set_ylabel("SpO2 (%)", fontsize=10)
+        
+        self.line_hr, = self.ax_hr.plot([], [], 
+                                       lw=2, 
+                                       label="Heart Rate (BPM)", 
+                                       color=self.data_manager.graph_colors["hr"],
+                                       marker='^',
+                                       markersize=4,
+                                       alpha=0.7)
+        self.line_spo2, = self.ax_hr2.plot([], [], 
+                                         lw=2, 
+                                         label="SpO2 (%)", 
+                                         color=self.data_manager.graph_colors["spo2"],
+                                         marker='d',
+                                         markersize=4,
+                                         alpha=0.7)
+        
+        # Enhance grid and ticks
+        self.ax_hr.grid(True, linestyle='--', alpha=0.6)
+        self.ax_hr.tick_params(axis='both', which='major', labelsize=9)
+        self.ax_hr2.tick_params(axis='y', which='major', labelsize=9)
+        
+        # Combine legends
+        lines = [self.line_hr, self.line_spo2]
+        labels = [line.get_label() for line in lines]
+        self.ax_hr.legend(lines, labels, loc='upper right', fontsize=9)
+        
+        # Format x-axis
+        self.ax_hr.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+        self.ax_hr.xaxis.set_major_locator(mdates.AutoDateLocator())
+        
+        # Add some padding
+        self.fig_hr.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.15)
+        
         self.canvas_hr = FigureCanvas(self.fig_hr)
         self.layout.addWidget(self.canvas_hr)
+
+        # Create a horizontal layout for the bottom graphs
+        self.bottom_graphs_layout = QHBoxLayout()
+
+        # 3D Gyroscope Graph
+        self.fig_3d = plt.figure(figsize=(6, 4))
+        self.ax_3d = self.fig_3d.add_subplot(111, projection='3d')
+        self.ax_3d.set_title("Gyroscope Orientation", fontsize=12, fontweight='bold', pad=15)
+        self.ax_3d.set_xlabel("X", fontsize=9)
+        self.ax_3d.set_ylabel("Y", fontsize=9)
+        self.ax_3d.set_zlabel("Z", fontsize=9)
+        
+        # Initialize arrows
+        self.arrow_x = self.ax_3d.quiver(0, 0, 0, 1, 0, 0, color='r', linewidth=2, arrow_length_ratio=0.2, label='X')
+        self.arrow_y = self.ax_3d.quiver(0, 0, 0, 0, 1, 0, color='g', linewidth=2, arrow_length_ratio=0.2, label='Y')
+        self.arrow_z = self.ax_3d.quiver(0, 0, 0, 0, 0, 1, color='b', linewidth=2, arrow_length_ratio=0.2, label='Z')
+        
+        # Set equal aspect ratio
+        self.ax_3d.set_box_aspect([1, 1, 1])
+        
+        # Add legend and grid
+        self.ax_3d.legend(fontsize=9)
+        self.ax_3d.grid(True, linestyle='--', alpha=0.6)
+        
+        # Adjust viewing angle for better perspective
+        self.ax_3d.view_init(elev=20, azim=45)
+        
+        self.canvas_3d = FigureCanvas(self.fig_3d)
+        self.bottom_graphs_layout.addWidget(self.canvas_3d)
+
+        # Linear Acceleration Graph
+        self.fig_accel = plt.figure(figsize=(6, 4))
+        self.ax_accel = self.fig_accel.add_subplot(111)
+        self.ax_accel.set_title("Linear Acceleration", fontsize=12, fontweight='bold', pad=15)
+        self.ax_accel.set_xlabel("Time", fontsize=10)
+        self.ax_accel.set_ylabel("Acceleration (m/s²)", fontsize=10)
+        self.line_accel, = self.ax_accel.plot([], [], 
+                                            lw=2, 
+                                            color='orange',
+                                            marker='o',
+                                            markersize=4,
+                                            alpha=0.7)
+        
+        # Enhance grid and ticks
+        self.ax_accel.grid(True, linestyle='--', alpha=0.6)
+        self.ax_accel.tick_params(axis='both', which='major', labelsize=9)
+        
+        # Format x-axis
+        self.ax_accel.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+        self.ax_accel.xaxis.set_major_locator(mdates.AutoDateLocator())
+        
+        # Add some padding
+        self.fig_accel.subplots_adjust(left=0.15, right=0.95, top=0.9, bottom=0.15)
+        
+        self.canvas_accel = FigureCanvas(self.fig_accel)
+        self.bottom_graphs_layout.addWidget(self.canvas_accel)
+
+        # Add the bottom graphs layout to the main layout
+        self.layout.addLayout(self.bottom_graphs_layout)
 
         # Data for the graphs
         self.timestamps = []
@@ -612,24 +746,9 @@ class MainProgram(QMainWindow):
         self.hearttemp_values = []
         self.hr_values = []
         self.spo2_values = []
-        
-        # Add a 3D graph for gyroscope data
-        self.fig_3d = plt.figure(figsize=(6, 4))
-        self.ax_3d = self.fig_3d.add_subplot(111, projection='3d')
-        self.ax_3d.set_title("Real-Time Gyroscope Data", fontsize=12)
-        self.ax_3d.set_xlabel("X")
-        self.ax_3d.set_ylabel("Y")
-        self.ax_3d.set_zlabel("Z")
+        self.accel_values = []
 
-        # Initialize arrows for x, y, z axes
-        self.arrow_x = self.ax_3d.quiver(0, 0, 0, 1, 0, 0, color='r', label='X')
-        self.arrow_y = self.ax_3d.quiver(0, 0, 0, 0, 1, 0, color='g', label='Y')
-        self.arrow_z = self.ax_3d.quiver(0, 0, 0, 0, 0, 1, color='b', label='Z')
-
-        self.ax_3d.legend()
-        self.canvas_3d = FigureCanvas(self.fig_3d)
-        self.layout.addWidget(self.canvas_3d)
-        
+                
         # Add a button to open the pop-out window
         self.pop_out_button = QPushButton("Open Pop-Out Window")
         self.pop_out_button.clicked.connect(self.open_pop_out_window)
@@ -643,33 +762,7 @@ class MainProgram(QMainWindow):
         # Start updating the GUI and graphs
         self.update_gui()
         self.update_graphs()
-        self.update_3d_graph()  # Start updating the 3D graph
 
-    def update_3d_graph(self):
-        """Update the 3D graph with real-time gyroscope data."""
-        if self.data_manager.gyro_data != "N/A":
-            try:
-                # Parse gyroscope data (assuming format "X: x_val, Y: y_val, Z: z_val")
-                gyro_data = self.data_manager.gyro_data
-                x_val = float(gyro_data.split("X: ")[1].split(",")[0])
-                y_val = float(gyro_data.split("Y: ")[1].split(",")[0])
-                z_val = float(gyro_data.split("Z: ")[1].split(",")[0])
-
-                # Update the arrows for x, y, z axes
-                self.arrow_x.remove()
-                self.arrow_y.remove()
-                self.arrow_z.remove()
-                self.arrow_x = self.ax_3d.quiver(0, 0, 0, x_val, 0, 0, color='r', label='X')
-                self.arrow_y = self.ax_3d.quiver(0, 0, 0, 0, y_val, 0, color='g', label='Y')
-                self.arrow_z = self.ax_3d.quiver(0, 0, 0, 0, 0, z_val, color='b', label='Z')
-
-                # Redraw the 3D graph
-                self.canvas_3d.draw()
-            except Exception as e:
-                print(f"Error updating 3D graph: {e}")
-
-        # Schedule the next update (every 100ms)
-        QTimer.singleShot(100, self.update_3d_graph)
         
     def open_customise_window(self):
         """Open the CustomiseWindow from the MainProgram."""
@@ -811,8 +904,12 @@ class MainProgram(QMainWindow):
         QTimer.singleShot(100, self.update_gui)  # Schedule the next update (every 100ms)
 
     def update_graphs(self):
-        if self.data_manager.temp_data != "N/A" and self.data_manager.hearttemp_data != "N/A" and self.data_manager.heart_rate_data != "N/A" and self.data_manager.spo2_data != "N/A":
-            # Convert the current time to a datetime object
+        """Enhanced graph update method with linear acceleration"""
+        if (self.data_manager.temp_data != "N/A" and 
+            self.data_manager.hearttemp_data != "N/A" and 
+            self.data_manager.heart_rate_data != "N/A" and 
+            self.data_manager.spo2_data != "N/A"):
+            
             timestamp = datetime.now()
             self.timestamps.append(timestamp)
             self.temp_values.append(float(self.data_manager.temp_data))
@@ -820,7 +917,7 @@ class MainProgram(QMainWindow):
             self.hr_values.append(float(self.data_manager.heart_rate_data))
             self.spo2_values.append(float(self.data_manager.spo2_data))
 
-            # Limit to the last N data points (dynamic limit)
+            # Limit to the last N data points
             max_points = self.data_manager.graph_data_points
             if len(self.timestamps) > max_points:
                 self.timestamps = self.timestamps[-max_points:]
@@ -829,44 +926,101 @@ class MainProgram(QMainWindow):
                 self.hr_values = self.hr_values[-max_points:]
                 self.spo2_values = self.spo2_values[-max_points:]
 
-            # Update the temperature graph
+            # Update Temperature Graph
             self.line_temp.set_data(self.timestamps, self.temp_values)
             self.line_hearttemp.set_data(self.timestamps, self.hearttemp_values)
-            self.ax_temp.relim()
-            self.ax_temp.autoscale_view()
-
-            # Update the heart rate and SpO2 graph
+            
+            # Auto-scale with some padding
+            temp_min = min(min(self.temp_values), min(self.hearttemp_values)) - 0.5
+            temp_max = max(max(self.temp_values), max(self.hearttemp_values)) + 0.5
+            self.ax_temp.set_ylim(temp_min, temp_max)
+            if len(self.timestamps) > 1:
+                self.ax_temp.set_xlim(self.timestamps[0], self.timestamps[-1])
+            else:
+                single_time = self.timestamps[0]
+                pad = timedelta(seconds=1)
+                self.ax_temp.set_xlim(single_time - pad, single_time + pad)            
+            
+            # Update Heart Rate Graph
             self.line_hr.set_data(self.timestamps, self.hr_values)
             self.line_spo2.set_data(self.timestamps, self.spo2_values)
-            self.ax_hr.relim()
-            self.ax_hr.autoscale_view()
-
-            # Adjust x-axis limits to fit the number of data points
+            
+            # Auto-scale with different ranges for HR and SpO2
+            hr_min, hr_max = min(self.hr_values)-5, max(self.hr_values)+5
+            spo2_min, spo2_max = min(self.spo2_values)-2, max(self.spo2_values)+2
+            
+            self.ax_hr.set_ylim(hr_min, hr_max)
+            self.ax_hr2.set_ylim(spo2_min, spo2_max)
             if len(self.timestamps) > 1:
-                time_range = (self.timestamps[-1] - self.timestamps[0]).total_seconds()
-                self.ax_temp.set_xlim(self.timestamps[0], self.timestamps[-1])
                 self.ax_hr.set_xlim(self.timestamps[0], self.timestamps[-1])
+            else:
+                single_time = self.timestamps[0]
+                pad = timedelta(seconds=1)
+                self.ax_hr.set_xlim(single_time - pad, single_time + pad)
+            
+            # Update Linear Acceleration Graph
+            if self.data_manager.accel_data != "N/A":
+                self.accel_values.append(self.data_manager.linear_accel)
+                
+                # Limit to the last N data points
+                if len(self.accel_values) > max_points:
+                    self.accel_values = self.accel_values[-max_points:]
+                
+                self.line_accel.set_data(self.timestamps[-len(self.accel_values):], self.accel_values)
+                
+                # Auto-scale with some padding
+                if len(self.accel_values) > 0:
+                    accel_min = min(self.accel_values) - 0.5
+                    accel_max = max(self.accel_values) + 0.5
+                    self.ax_accel.set_ylim(max(0, accel_min), accel_max)
+                    
+                    if len(self.timestamps) > 1:
+                        self.ax_accel.set_xlim(self.timestamps[0], self.timestamps[-1])
+                    else:
+                        single_time = self.timestamps[0]
+                        pad = timedelta(seconds=1)
+                        self.ax_accel.set_xlim(single_time - pad, single_time + pad)
+            
+            # Update 3D Gyroscope Graph if data available
+            if self.data_manager.gyro_data != "N/A":
+                try:
+                    gyro_data = self.data_manager.gyro_data
+                    x_val = float(gyro_data.split("X: ")[1].split(",")[0])
+                    y_val = float(gyro_data.split("Y: ")[1].split(",")[0])
+                    z_val = float(gyro_data.split("Z: ")[1].split(",")[0])
+                    
+                    # Remove old arrows
+                    self.arrow_x.remove()
+                    self.arrow_y.remove()
+                    self.arrow_z.remove()
+                    
+                    # Create new arrows with normalized length
+                    max_val = max(abs(x_val), abs(y_val), abs(z_val), 1)
+                    scale = 2/max_val
+                    
+                    self.arrow_x = self.ax_3d.quiver(0, 0, 0, x_val*scale, 0, 0, 
+                                                    color='r', linewidth=2, 
+                                                    arrow_length_ratio=0.2, label='X')
+                    self.arrow_y = self.ax_3d.quiver(0, 0, 0, 0, y_val*scale, 0, 
+                                                    color='g', linewidth=2, 
+                                                    arrow_length_ratio=0.2, label='Y')
+                    self.arrow_z = self.ax_3d.quiver(0, 0, 0, 0, 0, z_val*scale, 
+                                                    color='b', linewidth=2, 
+                                                    arrow_length_ratio=0.2, label='Z')
+                    
+                    # Set equal aspect ratio
+                    self.ax_3d.set_xlim(-2, 2)
+                    self.ax_3d.set_ylim(-2, 2)
+                    self.ax_3d.set_zlim(-2, 2)
+                    
+                except Exception as e:
+                    print(f"Error updating 3D graph: {e}")
 
-                # Adjust x-axis tick formatting based on the time range
-                if time_range <= 60:  # Less than or equal to 1 minute
-                    self.ax_temp.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-                    self.ax_hr.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-                    self.ax_temp.xaxis.set_major_locator(mdates.SecondLocator(interval=5))  # Show every 5 seconds
-                    self.ax_hr.xaxis.set_major_locator(mdates.SecondLocator(interval=5))
-                elif time_range <= 3600:  # Less than or equal to 1 hour
-                    self.ax_temp.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-                    self.ax_hr.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-                    self.ax_temp.xaxis.set_major_locator(mdates.MinuteLocator(interval=1))  # Show every minute
-                    self.ax_hr.xaxis.set_major_locator(mdates.MinuteLocator(interval=1))
-                else:  # More than 1 hour
-                    self.ax_temp.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-                    self.ax_hr.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-                    self.ax_temp.xaxis.set_major_locator(mdates.HourLocator(interval=1))  # Show every hour
-                    self.ax_hr.xaxis.set_major_locator(mdates.HourLocator(interval=1))
-
-            # Redraw the graphs
+            # Redraw all canvases
             self.canvas_temp.draw()
             self.canvas_hr.draw()
+            self.canvas_accel.draw()
+            self.canvas_3d.draw()
 
             # Apply visibility settings
             self.line_temp.set_visible(self.data_manager.visible_sensors["temp"])
@@ -881,7 +1035,7 @@ class MainProgram(QMainWindow):
             self.line_spo2.set_color(self.data_manager.graph_colors["spo2"])
 
         QTimer.singleShot(1000, self.update_graphs)
-    
+
     def event(self, event):
         """Override the event method to handle the question mark button click."""
         if event.type() == QEvent.EnterWhatsThisMode:
@@ -909,52 +1063,112 @@ class PopOutWindow(QDialog):
         super().__init__(parent)
         self.data_manager = data_manager
         self.setWindowTitle("Sensor Data Summary")
-        self.setGeometry(100, 100, 600, 400)  # Smaller size for the pop-out window
+        self.setGeometry(100, 100, 800, 600)  # Larger size to accommodate horizontal layout
+        
+        # Set window flags to keep it always on top
+        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+        
+        # Main layout
+        main_layout = QVBoxLayout()
+        self.setLayout(main_layout)
 
-        # Layout
-        layout = QVBoxLayout()
-        self.setLayout(layout)
+        # Button row at the top
+        button_layout = QHBoxLayout()
+        
+        # Customise button
+        self.customise_button = QPushButton("Customise")
+        self.customise_button.clicked.connect(self.open_customise_dialog)
+        button_layout.addWidget(self.customise_button)
+        
+        # Close button
+        self.close_button = QPushButton("Close")
+        self.close_button.clicked.connect(self.close)
+        button_layout.addWidget(self.close_button)
+        
+        main_layout.addLayout(button_layout)
 
-        # Sensor data labels
-        self.accel_label = QLabel("Accelerometer: N/A")
-        self.gyro_label = QLabel("Gyroscope: N/A")
-        self.spo2_label = QLabel("SpO2: N/A%")
-        self.heart_rate_label = QLabel("Heart Rate: N/A BPM")
-        self.temp_label = QLabel("Temperature: N/A °C")
-        self.hearttemp_label = QLabel("Heart Temperature: N/A °C")
+        # Horizontal layout for sensor data
+        self.sensor_data_layout = QHBoxLayout()
+        self.sensor_data_layout.setSpacing(10)
+        
+        # Sensor data labels - store them in a dictionary for easy access
+        self.sensor_labels = {
+            "accel": QLabel("Accel:\nN/A"),
+            "gyro": QLabel("Gyro:\nN/A"),
+            "spo2": QLabel("SpO2:\nN/A%"),
+            "heart_rate": QLabel("HR:\nN/A BPM"),
+            "temp": QLabel("Temp:\nN/A °C"),
+            "hearttemp": QLabel("Heart Temp:\nN/A °C"),
+            "pedometer": QLabel("Steps:\nN/A")
+        }
+        
+        # Style and add all labels to the horizontal layout initially
+        for label in self.sensor_labels.values():
+            label.setAlignment(Qt.AlignCenter)
+            label.setStyleSheet("""
+                QLabel {
+                    border: 1px solid #555;
+                    border-radius: 5px;
+                    padding: 5px;
+                    background: #0B2E33;
+                    min-width: 80px;
+                }
+            """)
+            self.sensor_data_layout.addWidget(label)
+        
+        main_layout.addLayout(self.sensor_data_layout)
 
-        layout.addWidget(self.accel_label)
-        layout.addWidget(self.gyro_label)
-        layout.addWidget(self.spo2_label)
-        layout.addWidget(self.heart_rate_label)
-        layout.addWidget(self.temp_label)
-        layout.addWidget(self.hearttemp_label)
+        # Store visibility state for sensors and graphs
+        self.sensor_visibility = {
+            "accel": True,
+            "gyro": True,
+            "spo2": True,
+            "heart_rate": True,
+            "temp": True,
+            "hearttemp": True,
+            "pedometer": True
+        }
+        
+        self.graph_visibility = {
+            "temperature": True,
+            "heart_rate": True
+        }
 
-        # Matplotlib graph for real-time temperature data
-        self.fig_temp, self.ax_temp = plt.subplots(figsize=(5, 3))
-        self.ax_temp.set_title("Real-Time Temperature Data")
+        # Graph container
+        self.graph_container = QVBoxLayout()
+        main_layout.addLayout(self.graph_container)
+
+        # Temperature graph
+        self.temp_graph_widget = QWidget()
+        self.temp_graph_layout = QVBoxLayout(self.temp_graph_widget)
+        self.fig_temp = plt.figure(figsize=(6, 2))
+        self.ax_temp = self.fig_temp.add_subplot(111)
+        self.ax_temp.set_title("Temperature Data")
         self.ax_temp.set_xlabel("Time")
-        self.ax_temp.set_ylabel("Temperature (°C)")
-        self.line_temp, = self.ax_temp.plot([], [], lw=2, label="Body Temperature", color=self.data_manager.graph_colors["temp"])
-        self.line_hearttemp, = self.ax_temp.plot([], [], lw=2, label="Heart Temperature", color=self.data_manager.graph_colors["hearttemp"])
+        self.ax_temp.set_ylabel("Temp (°C)")
+        self.line_temp, = self.ax_temp.plot([], [], lw=2, label="Body Temp", color=self.data_manager.graph_colors["temp"])
+        self.line_hearttemp, = self.ax_temp.plot([], [], lw=2, label="Heart Temp", color=self.data_manager.graph_colors["hearttemp"])
         self.ax_temp.legend()
         self.ax_temp.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-        self.ax_temp.xaxis.set_major_locator(mdates.SecondLocator(interval=1))
         self.canvas_temp = FigureCanvas(self.fig_temp)
-        layout.addWidget(self.canvas_temp)
+        self.temp_graph_layout.addWidget(self.canvas_temp)
+        self.graph_container.addWidget(self.temp_graph_widget)
 
-        # Matplotlib graph for real-time heart rate and SpO2 data
-        self.fig_hr, self.ax_hr = plt.subplots(figsize=(5, 3))
-        self.ax_hr.set_title("Real-Time Heart Rate and SpO2")
+        # Heart rate graph
+        self.hr_graph_widget = QWidget()
+        self.hr_graph_layout = QVBoxLayout(self.hr_graph_widget)
+        self.fig_hr = plt.figure(figsize=(6, 2))
+        self.ax_hr = self.fig_hr.add_subplot(111)
+        self.ax_hr.set_title("Heart Rate & SpO2")
         self.ax_hr.set_xlabel("Time")
         self.ax_hr.set_ylabel("Value")
-        self.line_hr, = self.ax_hr.plot([], [], lw=2, label="Heart Rate (BPM)", color=self.data_manager.graph_colors["hr"])
+        self.line_hr, = self.ax_hr.plot([], [], lw=2, label="HR (BPM)", color=self.data_manager.graph_colors["hr"])
         self.line_spo2, = self.ax_hr.plot([], [], lw=2, label="SpO2 (%)", color=self.data_manager.graph_colors["spo2"])
         self.ax_hr.legend()
         self.ax_hr.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-        self.ax_hr.xaxis.set_major_locator(mdates.SecondLocator(interval=1))
         self.canvas_hr = FigureCanvas(self.fig_hr)
-        layout.addWidget(self.canvas_hr)
+        self.hr_graph_layout.addWidget(self.canvas_hr)
+        self.graph_container.addWidget(self.hr_graph_widget)
 
         # Data for the graphs
         self.timestamps = []
@@ -966,27 +1180,102 @@ class PopOutWindow(QDialog):
         # Start updating the GUI and graphs
         self.update_gui()
         self.update_graphs()
+        
+    def open_customise_dialog(self):
+        """Open a dialog to customise which sensors and graphs are visible."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Customise Display")
+        dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowStaysOnTopHint)
+        layout = QVBoxLayout()
+        
+        # Sensor visibility section
+        sensor_group = QGroupBox("Sensor Visibility")
+        sensor_layout = QGridLayout()
+        
+        row, col = 0, 0
+        for i, (sensor, visible) in enumerate(self.sensor_visibility.items()):
+            cb = QCheckBox(sensor.replace("_", " ").title())
+            cb.setChecked(visible)
+            sensor_layout.addWidget(cb, row, col)
+            col += 1
+            if col > 2:  # 3 columns
+                col = 0
+                row += 1
+        
+        sensor_group.setLayout(sensor_layout)
+        layout.addWidget(sensor_group)
+        
+        # Graph visibility section
+        graph_group = QGroupBox("Graph Visibility")
+        graph_layout = QVBoxLayout()
+        
+        self.temp_graph_cb = QCheckBox("Temperature Graph")
+        self.temp_graph_cb.setChecked(self.graph_visibility["temperature"])
+        graph_layout.addWidget(self.temp_graph_cb)
+        
+        self.hr_graph_cb = QCheckBox("Heart Rate Graph")
+        self.hr_graph_cb.setChecked(self.graph_visibility["heart_rate"])
+        graph_layout.addWidget(self.hr_graph_cb)
+        
+        graph_group.setLayout(graph_layout)
+        layout.addWidget(graph_group)
+        
+        # OK and Cancel buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        
+        dialog.setLayout(layout)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            # Update sensor visibility
+            for i, (sensor, _) in enumerate(self.sensor_visibility.items()):
+                cb = sensor_layout.itemAt(i).widget()
+                self.sensor_visibility[sensor] = cb.isChecked()
+                self.sensor_labels[sensor].setVisible(cb.isChecked())
+            
+            # Update graph visibility
+            self.graph_visibility["temperature"] = self.temp_graph_cb.isChecked()
+            self.graph_visibility["heart_rate"] = self.hr_graph_cb.isChecked()
+            
+            self.temp_graph_widget.setVisible(self.graph_visibility["temperature"])
+            self.hr_graph_widget.setVisible(self.graph_visibility["heart_rate"])
 
     def update_gui(self):
         """Update the GUI with the latest sensor data."""
-        if self.data_manager.accel_data != "N/A":
-            self.accel_label.setText(f"Accelerometer: {self.data_manager.accel_data}")
-        if self.data_manager.gyro_data != "N/A":
-            self.gyro_label.setText(f"Gyroscope: {self.data_manager.gyro_data}")
-        if self.data_manager.spo2_data != "N/A":
-            self.spo2_label.setText(f"SpO2: {self.data_manager.spo2_data}%")
-        if self.data_manager.heart_rate_data != "N/A":
-            self.heart_rate_label.setText(f"Heart Rate: {self.data_manager.heart_rate_data} BPM")
-        if self.data_manager.temp_data != "N/A":
-            self.temp_label.setText(f"Temperature: {self.data_manager.temp_data} °C")
-        if self.data_manager.hearttemp_data != "N/A":
-            self.hearttemp_label.setText(f"Heart Temperature: {self.data_manager.hearttemp_data} °C")
+        if self.data_manager.accel_data != "N/A" and self.sensor_visibility["accel"]:
+            x, y, z = self.data_manager.accel_data.split("X: ")[1].split(",")
+            self.sensor_labels["accel"].setText(f"Accel:\nX: {x.strip()}\nY: {y.split('Y: ')[1].strip()}\nZ: {z.split('Z: ')[1].strip()}")
+        
+        if self.data_manager.gyro_data != "N/A" and self.sensor_visibility["gyro"]:
+            x, y, z = self.data_manager.gyro_data.split("X: ")[1].split(",")
+            self.sensor_labels["gyro"].setText(f"Gyro:\nX: {x.strip()}\nY: {y.split('Y: ')[1].strip()}\nZ: {z.split('Z: ')[1].strip()}")
+        
+        if self.data_manager.spo2_data != "N/A" and self.sensor_visibility["spo2"]:
+            self.sensor_labels["spo2"].setText(f"SpO2:\n{self.data_manager.spo2_data}%")
+        
+        if self.data_manager.heart_rate_data != "N/A" and self.sensor_visibility["heart_rate"]:
+            self.sensor_labels["heart_rate"].setText(f"HR:\n{self.data_manager.heart_rate_data} BPM")
+        
+        if self.data_manager.temp_data != "N/A" and self.sensor_visibility["temp"]:
+            self.sensor_labels["temp"].setText(f"Temp:\n{self.data_manager.temp_data} °C")
+        
+        if self.data_manager.hearttemp_data != "N/A" and self.sensor_visibility["hearttemp"]:
+            self.sensor_labels["hearttemp"].setText(f"Heart Temp:\n{self.data_manager.hearttemp_data} °C")
+        
+        if self.data_manager.pedometer_data != "N/A" and self.sensor_visibility["pedometer"]:
+            self.sensor_labels["pedometer"].setText(f"Steps:\n{self.data_manager.pedometer_data}")
 
-        QTimer.singleShot(100, self.update_gui)  # Schedule the next update
+        QTimer.singleShot(100, self.update_gui)
 
     def update_graphs(self):
         """Update the graphs with the latest data."""
-        if self.data_manager.temp_data != "N/A" and self.data_manager.hearttemp_data != "N/A" and self.data_manager.heart_rate_data != "N/A" and self.data_manager.spo2_data != "N/A":
+        if (self.data_manager.temp_data != "N/A" and 
+            self.data_manager.hearttemp_data != "N/A" and 
+            self.data_manager.heart_rate_data != "N/A" and 
+            self.data_manager.spo2_data != "N/A"):
+            
             timestamp = datetime.now()
             self.timestamps.append(timestamp)
             self.temp_values.append(float(self.data_manager.temp_data))
@@ -1003,22 +1292,24 @@ class PopOutWindow(QDialog):
                 self.hr_values = self.hr_values[-max_points:]
                 self.spo2_values = self.spo2_values[-max_points:]
 
-            # Update the temperature graph
-            self.line_temp.set_data(self.timestamps, self.temp_values)
-            self.line_hearttemp.set_data(self.timestamps, self.hearttemp_values)
-            self.ax_temp.relim()
-            self.ax_temp.autoscale_view()
-            self.canvas_temp.draw()
+            # Update temperature graph if visible
+            if self.graph_visibility["temperature"]:
+                self.line_temp.set_data(self.timestamps, self.temp_values)
+                self.line_hearttemp.set_data(self.timestamps, self.hearttemp_values)
+                self.ax_temp.relim()
+                self.ax_temp.autoscale_view()
+                self.canvas_temp.draw()
 
-            # Update the heart rate and SpO2 graph
-            self.line_hr.set_data(self.timestamps, self.hr_values)
-            self.line_spo2.set_data(self.timestamps, self.spo2_values)
-            self.ax_hr.relim()
-            self.ax_hr.autoscale_view()
-            self.canvas_hr.draw()
+            # Update heart rate graph if visible
+            if self.graph_visibility["heart_rate"]:
+                self.line_hr.set_data(self.timestamps, self.hr_values)
+                self.line_spo2.set_data(self.timestamps, self.spo2_values)
+                self.ax_hr.relim()
+                self.ax_hr.autoscale_view()
+                self.canvas_hr.draw()
 
-        QTimer.singleShot(1000, self.update_graphs)  # Schedule the next update
-
+        QTimer.singleShot(1000, self.update_graphs)
+        
 # Start the introductory window
 if __name__ == "__main__":
     app = QApplication(sys.argv)

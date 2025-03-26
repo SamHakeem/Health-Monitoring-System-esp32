@@ -10,7 +10,6 @@ Soldered_LSM6DS3 myIMU;
 // Heart Rate & SpO2 Sensor
 #define I2C_ADDRESS 0x57
 DFRobot_BloodOxygen_S_I2C MAX30102(&Wire, I2C_ADDRESS);
-MAX30102.getIR();
 
 // Temperature Sensor
 Adafruit_TMP117 tmp117;
@@ -23,7 +22,7 @@ Adafruit_TMP117 tmp117;
 #define HEART_RATE_UUID "beb5483e-36e1-4688-b7f5-ea07361b26ab"
 #define TEMP_UUID "beb5483e-36e1-4688-b7f5-ea07361b26ac"
 #define HEARTTEMP_UUID "beb5483e-36e1-4688-b7f5-ea07361b26af"
-#define PEDOMETER_UUID "beb5483e-36e1-4688-b7f5-ea07361b26b0"  // New UUID for pedometer
+#define PEDOMETER_UUID "beb5483e-36e1-4688-b7f5-ea07361b26b0"
 
 // BLE Characteristics
 BLECharacteristic *accelCharacteristic;
@@ -70,12 +69,13 @@ void setup() {
   }
 
   // Initialize BLE
-  NimBLEDevice::init("ESP32_BLE_Server");  // Sets the base device name
+  NimBLEDevice::init("ESP32_BLE_Server");  //base device name
+
   NimBLEServer *pServer = NimBLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());  // Set disconnect callback
+  pServer->setCallbacks(new MyServerCallbacks());  //disconnect callback
   NimBLEService *pService = pServer->createService(SERVICE_UUID);
 
-  // Create characteristics
+  // BLE Characteristics
   accelCharacteristic = pService->createCharacteristic(
     ACCEL_UUID,
     NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
@@ -104,18 +104,18 @@ void setup() {
     PEDOMETER_UUID,
     NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);  // New characteristic for pedometer
 
-  // Start the service and advertising
+  // Service Advertising
   pService->start();
   NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
-  pAdvertising->setName("ESP32_BLE_Server");  // Visible name during scanning
+  pAdvertising->setName("ESP32_BLE_Server");  //name during scanning
   pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setMinInterval(100);  // Minimum advertising interval (in units of 0.625 ms)
-  pAdvertising->setMaxInterval(150);  // Maximum advertising interval (in units of 0.625 ms)
+  pAdvertising->setMinInterval(100);
+  pAdvertising->setMaxInterval(150);
   pAdvertising->start();
   Serial.println("BLE Server started");
 
   NimBLEAddress macAddress = NimBLEDevice::getAddress();
-  Serial.print("Bluetooth MAC Address: ");
+  Serial.print("Bluetooth MAC Address: "); //just for testing
   Serial.println(macAddress.toString().c_str());
 
   // Initialize pedometer
@@ -145,24 +145,24 @@ void setup() {
 }
 
 void loop() {
-  // Read and prepare sensor data
-  String accelData = String(myIMU.readFloatAccelX(), 4) + "," + String(myIMU.readFloatAccelY(), 4) + "," + String(myIMU.readFloatAccelZ(), 4);
-  String gyroData = String(myIMU.readFloatGyroX(), 4) + "," + String(myIMU.readFloatGyroY(), 4) + "," + String(myIMU.readFloatGyroZ(), 4);
-
+  // Read heart rate and SpO2 first to check if they're valid
   MAX30102.getHeartbeatSPO2();
   float spo2 = MAX30102._sHeartbeatSPO2.SPO2;
   float heartRate = MAX30102._sHeartbeatSPO2.Heartbeat;
+  
+  // Skip this iteration if either heart rate or SpO2 is -1
+  if (heartRate == -1 || spo2 == -1) {
+    Serial.println("Invalid sensor reading - skipping this iteration. Check sensor positioning.");
+    delay(1000); // Wait before trying again
+    return; // Skip the rest of this loop iteration
+  }
+
+  // If we get here, we have valid heart rate and SpO2 values
   float heartTemp = MAX30102.getTemperature_C();
 
-  // Check if heart rate or SpO2 is -1 and set to 0 if true
-  if (heartRate == -1) {
-    heartRate = 0;
-    Serial.println("check positioning");
-  }
-  if (spo2 == -1) {
-    spo2 = 0;
-    Serial.println("check positioning");
-  }
+  // Read and prepare other sensor data
+  String accelData = String(myIMU.readFloatAccelX(), 4) + "," + String(myIMU.readFloatAccelY(), 4) + "," + String(myIMU.readFloatAccelZ(), 4);
+  String gyroData = String(myIMU.readFloatGyroX(), 4) + "," + String(myIMU.readFloatGyroY(), 4) + "," + String(myIMU.readFloatGyroZ(), 4);
 
   sensors_event_t tempEvent;
   tmp117.getEvent(&tempEvent);

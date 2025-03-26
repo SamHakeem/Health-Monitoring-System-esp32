@@ -1112,6 +1112,7 @@ class PopOutWindow(QDialog):
                     padding: 5px;
                     background: #0B2E33;
                     min-width: 80px;
+                    font-size: 10px;
                 }
             """)
             self.sensor_data_layout.addWidget(label)
@@ -1131,7 +1132,8 @@ class PopOutWindow(QDialog):
         
         self.graph_visibility = {
             "temperature": True,
-            "heart_rate": True
+            "heart_rate": True,
+            "linear_accel": True
         }
 
         # Graph container
@@ -1170,12 +1172,32 @@ class PopOutWindow(QDialog):
         self.hr_graph_layout.addWidget(self.canvas_hr)
         self.graph_container.addWidget(self.hr_graph_widget)
 
+        # Linear acceleration graph
+        self.accel_graph_widget = QWidget()
+        self.accel_graph_layout = QVBoxLayout(self.accel_graph_widget)
+        self.fig_accel = plt.figure(figsize=(6, 2))
+        self.ax_accel = self.fig_accel.add_subplot(111)
+        self.ax_accel.set_title("Linear Acceleration")
+        self.ax_accel.set_xlabel("Time")
+        self.ax_accel.set_ylabel("Accel (m/s²)")
+        self.line_accel, = self.ax_accel.plot([], [], lw=2, color='orange')
+        self.ax_accel.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+        self.canvas_accel = FigureCanvas(self.fig_accel)
+        self.accel_graph_layout.addWidget(self.canvas_accel)
+        self.graph_container.addWidget(self.accel_graph_widget)
+    
+        # For all graphs in PopOutWindow
+        self.fig_temp.subplots_adjust(left=0.15, right=0.95, top=0.9, bottom=0.2)
+        self.fig_hr.subplots_adjust(left=0.15, right=0.85, top=0.9, bottom=0.2)
+        self.fig_accel.subplots_adjust(left=0.15, right=0.95, top=0.9, bottom=0.2)
+    
         # Data for the graphs
         self.timestamps = []
         self.temp_values = []
         self.hearttemp_values = []
         self.hr_values = []
         self.spo2_values = []
+        self.accel_values = []
 
         # Start updating the GUI and graphs
         self.update_gui()
@@ -1217,6 +1239,11 @@ class PopOutWindow(QDialog):
         self.hr_graph_cb.setChecked(self.graph_visibility["heart_rate"])
         graph_layout.addWidget(self.hr_graph_cb)
         
+        # Add checkbox for linear acceleration graph
+        self.accel_graph_cb = QCheckBox("Linear Acceleration Graph")
+        self.accel_graph_cb.setChecked(self.graph_visibility["linear_accel"])
+        graph_layout.addWidget(self.accel_graph_cb)
+        
         graph_group.setLayout(graph_layout)
         layout.addWidget(graph_group)
         
@@ -1238,9 +1265,11 @@ class PopOutWindow(QDialog):
             # Update graph visibility
             self.graph_visibility["temperature"] = self.temp_graph_cb.isChecked()
             self.graph_visibility["heart_rate"] = self.hr_graph_cb.isChecked()
-            
+            self.graph_visibility["linear_accel"] = self.accel_graph_cb.isChecked()
+         
             self.temp_graph_widget.setVisible(self.graph_visibility["temperature"])
             self.hr_graph_widget.setVisible(self.graph_visibility["heart_rate"])
+            self.accel_graph_widget.setVisible(self.graph_visibility["linear_accel"])
 
     def update_gui(self):
         """Update the GUI with the latest sensor data."""
@@ -1274,7 +1303,8 @@ class PopOutWindow(QDialog):
         if (self.data_manager.temp_data != "N/A" and 
             self.data_manager.hearttemp_data != "N/A" and 
             self.data_manager.heart_rate_data != "N/A" and 
-            self.data_manager.spo2_data != "N/A"):
+            self.data_manager.spo2_data != "N/A" and 
+            self.data_manager.accel_data != "N/A"):
             
             timestamp = datetime.now()
             self.timestamps.append(timestamp)
@@ -1282,6 +1312,8 @@ class PopOutWindow(QDialog):
             self.hearttemp_values.append(float(self.data_manager.hearttemp_data))
             self.hr_values.append(float(self.data_manager.heart_rate_data))
             self.spo2_values.append(float(self.data_manager.spo2_data))
+            self.accel_values.append(self.data_manager.linear_accel)
+
 
             # Limit to the last N data points
             max_points = self.data_manager.graph_data_points
@@ -1291,6 +1323,7 @@ class PopOutWindow(QDialog):
                 self.hearttemp_values = self.hearttemp_values[-max_points:]
                 self.hr_values = self.hr_values[-max_points:]
                 self.spo2_values = self.spo2_values[-max_points:]
+                self.accel_values = self.accel_values[-max_points:]
 
             # Update temperature graph if visible
             if self.graph_visibility["temperature"]:
@@ -1307,6 +1340,13 @@ class PopOutWindow(QDialog):
                 self.ax_hr.relim()
                 self.ax_hr.autoscale_view()
                 self.canvas_hr.draw()
+                
+            # Update acceleratipn graph
+            if self.graph_visibility["linear_accel"]:
+                self.line_accel.set_data(self.timestamps, self.accel_values)
+                self.ax_accel.relim()
+                self.ax_accel.autoscale_view()
+                self.canvas_accel.draw()
 
         QTimer.singleShot(1000, self.update_graphs)
         

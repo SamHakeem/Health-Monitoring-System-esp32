@@ -343,21 +343,21 @@ class IntroWindow(QMainWindow):
 
         # Buttons
         self.connect_button = QPushButton("Connect")
-        self.connect_button.setIcon(QIcon("connect_icon.png"))
+        self.connect_button.setIcon(QIcon("icons/connect_icon.png"))
         self.connect_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; border-radius: 10px; padding: 5px; }"
                                          "QPushButton:hover { background-color: #45a049; }")
         self.connect_button.clicked.connect(self.open_connect_window)
         self.layout.addWidget(self.connect_button)
 
         self.settings_button = QPushButton("Settings")
-        self.settings_button.setIcon(QIcon("settings_icon.png"))
+        self.settings_button.setIcon(QIcon("icons/settings_icon.png"))
         self.settings_button.setStyleSheet("QPushButton { background-color: #008CBA; color: white; border-radius: 10px; padding: 5px; }"
                                           "QPushButton:hover { background-color: #007B9E; }")
         self.settings_button.clicked.connect(self.open_settings_window)
         self.layout.addWidget(self.settings_button)
 
         self.customise_button = QPushButton("Customise")
-        self.customise_button.setIcon(QIcon("customise_icon.png"))
+        self.customise_button.setIcon(QIcon("icons/customise_icon.png"))
         self.customise_button.setStyleSheet("QPushButton { background-color: #FFA500; color: white; border-radius: 10px; padding: 5px; }"
                                             "QPushButton:hover { background-color: #FF8C00; }")
         self.customise_button.clicked.connect(self.open_customise_window)
@@ -365,7 +365,7 @@ class IntroWindow(QMainWindow):
 
         self.start_button = QPushButton("Start")
         self.start_button.clicked.connect(self.start_program)
-        self.start_button.setIcon(QIcon("start_icon.png"))
+        self.start_button.setIcon(QIcon("icons/start_icon.png"))
         self.start_button.setStyleSheet("QPushButton { background-color: #f44336; color: white; border-radius: 10px; padding: 5px; }"
                                        "QPushButton:hover { background-color: #e53935; }")
         self.layout.addWidget(self.start_button)

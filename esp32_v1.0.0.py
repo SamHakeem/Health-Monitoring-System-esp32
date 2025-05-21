@@ -1199,7 +1199,7 @@ class PopOutWindow(QDialog):
         self.spo2_values = []
         self.accel_values = []
 
-        # Start updating the GUI and graphs
+        # Start updating GUI and graphs
         self.update_gui()
         self.update_graphs()
         
@@ -1210,7 +1210,7 @@ class PopOutWindow(QDialog):
         dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowStaysOnTopHint)
         layout = QVBoxLayout()
         
-        # Sensor visibility section
+        # Sensor visibility 
         sensor_group = QGroupBox("Sensor Visibility")
         sensor_layout = QGridLayout()
         
@@ -1220,14 +1220,14 @@ class PopOutWindow(QDialog):
             cb.setChecked(visible)
             sensor_layout.addWidget(cb, row, col)
             col += 1
-            if col > 2:  # 3 columns
+            if col > 2:
                 col = 0
                 row += 1
         
         sensor_group.setLayout(sensor_layout)
         layout.addWidget(sensor_group)
         
-        # Graph visibility section
+        # Graph visibility 
         graph_group = QGroupBox("Graph Visibility")
         graph_layout = QVBoxLayout()
         
@@ -1239,7 +1239,7 @@ class PopOutWindow(QDialog):
         self.hr_graph_cb.setChecked(self.graph_visibility["heart_rate"])
         graph_layout.addWidget(self.hr_graph_cb)
         
-        # Add checkbox for linear acceleration graph
+        # checkbox for linear acceleration graph
         self.accel_graph_cb = QCheckBox("Linear Acceleration Graph")
         self.accel_graph_cb.setChecked(self.graph_visibility["linear_accel"])
         graph_layout.addWidget(self.accel_graph_cb)

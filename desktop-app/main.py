@@ -101,7 +101,7 @@ class SensorDataManager:
     def load_calibration(self):
         """Load calibration biases from a file."""
         try:
-            with open("ui/resources/calibration.json", "r") as f:
+            with open("resources/calibration.json", "r") as f:
                 calibration = json.load(f)
                 self.accel_bias = calibration["accel_bias"]
                 self.gyro_bias = calibration["gyro_bias"]
@@ -112,7 +112,7 @@ class SensorDataManager:
 
     def save_calibration(self):
         """Save calibration biases to a file."""
-        with open("ui/resources/calibration.json", "w") as f:
+        with open("resources/calibration.json", "w") as f:
             json.dump({"accel_bias": self.accel_bias, "gyro_bias": self.gyro_bias}, f)
 
     def log_data(self, timestamp, accel, gyro, spo2, heart_rate, temp, hearttemp):

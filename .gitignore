@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.log
+
+# Jupyter
+.ipynb_checkpoints
+
+# VSCode and other IDEs
+.vscode/
+.idea/
+
+# Arduino
+*.ino.save
+*.bin
+*.elf
+*.hex
+build/
+*.cpp~
+*.h~
+
+# OS files
+.DS_Store
+Thumbs.db
